@@ -424,3 +424,10 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+# ---- MyPcdEditor ----
+# 样例数据（单包数百 MB），不入库，本地手工放置
+testdata/
+# 本地临时产物
+*.local.md
+publish-out/
