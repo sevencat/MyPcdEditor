@@ -20,6 +20,8 @@ public sealed partial class MainWindow : Window
 
     private string _detail = "未加载数据";
     private string _gridDetail = string.Empty;
+    private string _sampleDetail = string.Empty;
+    private long _cloudPointCount;
     private MapPackage? _package;
 
     /// <summary>当前包是否带 PGM（自检据此判断地图视图该不该有内容）。</summary>
@@ -51,6 +53,12 @@ public sealed partial class MainWindow : Window
             View.ShowGround = false;
         }
 
+        // PGV_NO_MAP=1：同上，收起 2D 面板，用来隔离它对帧率的影响
+        if (Environment.GetEnvironmentVariable("PGV_NO_MAP") == "1")
+        {
+            MapToggle.IsChecked = SetMapPanelVisible(false);
+        }
+
         GroundCheck.PropertyChanged += (_, e) =>
         {
             if (e.Property == CheckBox.IsCheckedProperty)
@@ -69,6 +77,20 @@ public sealed partial class MainWindow : Window
 
         ColorModeBox.SelectionChanged += (_, _) =>
             View.ColorMode = ColorModeBox.SelectedIndex == 1 ? PointColorMode.Mono : PointColorMode.Height;
+
+        DetailBox.SelectedIndex = View.DrawStep switch { 2 => 1, 4 => 2, 8 => 3, _ => 0 };
+
+        DetailBox.SelectionChanged += (_, _) =>
+        {
+            View.DrawStep = DetailBox.SelectedIndex switch
+            {
+                1 => 2,
+                2 => 4,
+                3 => 8,
+                _ => 1,
+            };
+            UpdateDrawnDetail();
+        };
 
         Opened += OnOpened;
 
@@ -213,7 +235,19 @@ public sealed partial class MainWindow : Window
 
     private void OnCloudReady(XyzCloud cloud)
     {
+        _cloudPointCount = cloud.PointCount;
+        UpdateDrawnDetail();
         SetStatus(_detail + _gridDetail);
+    }
+
+    /// <summary>状态栏的抽样提示：只在真的抽样时出现。</summary>
+    private void UpdateDrawnDetail()
+    {
+        int step = Math.Max(View.DrawStep, 1);
+        _sampleDetail = step <= 1 || _cloudPointCount <= 0
+            ? string.Empty
+            : string.Create(CultureInfo.InvariantCulture,
+                $" · 绘制 1/{step}（{PointCloudRenderer.SamplePointCount((int)_cloudPointCount, step):N0} 点）");
     }
 
     private void OnFrameStats(GlControlBase control)
@@ -224,7 +258,7 @@ public sealed partial class MainWindow : Window
             ? $" · 上传 {view.UploadProgress:P0}"
             : string.Empty;
 
-        SetStatus($"{_detail}{_gridDetail} · {size} · {control.Fps:F0} FPS{progress} · {renderer}");
+        SetStatus($"{_detail}{_sampleDetail}{_gridDetail} · {size} · {control.Fps:F0} FPS{progress} · {renderer}");
     }
 
     /// <summary>栅格图概览（已读到的图直接复用，避免再解一遍 30 M px）。</summary>
@@ -244,7 +278,12 @@ public sealed partial class MainWindow : Window
     /// <summary>2D 地图面板开关（隐藏时把宽度让给 3D 视图）。</summary>
     private void OnMapToggleClick(object? sender, RoutedEventArgs e)
     {
-        bool visible = MapToggle.IsChecked == true;
+        MapToggle.IsChecked = SetMapPanelVisible(MapToggle.IsChecked == true);
+    }
+
+    /// <summary>显式设置 2D 面板可见性，返回最终状态。</summary>
+    private bool SetMapPanelVisible(bool visible)
+    {
         MapPanel.IsVisible = visible;
         MapSplitter.IsVisible = visible;
 
@@ -252,6 +291,7 @@ public sealed partial class MainWindow : Window
         ContentGrid.ColumnDefinitions[1].Width = visible ? new GridLength(4) : new GridLength(0);
         ContentGrid.ColumnDefinitions[2].Width =
             visible ? new GridLength(2, GridUnitType.Star) : new GridLength(0);
+        return visible;
     }
 
     private void OnMapCursor(MapCursorInfo info)

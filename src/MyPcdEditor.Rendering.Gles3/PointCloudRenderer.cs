@@ -97,7 +97,10 @@ public sealed class PointCloudRenderer : IDisposable
     private Shader? _shader;
     private uint _vao;
     private uint _vbo;
+    private uint _ibo;
     private int _pointCount;
+    private int _indexStep;
+    private int _indexCount;
 
     /// <summary>点云总字节数（0 表示没有点云）。</summary>
     public long TotalBytes { get; private set; }
@@ -143,6 +146,10 @@ public sealed class PointCloudRenderer : IDisposable
         TotalBytes = (long)pointCount * Stride;
         UploadedBytes = 0;
 
+        // 点数变了，抽样索引必须重建
+        _indexStep = 0;
+        _indexCount = 0;
+
         var gl = GlContext.Gl;
         gl.BindBuffer(GLEnum.ArrayBuffer, _vbo);
         unsafe
@@ -178,6 +185,67 @@ public sealed class PointCloudRenderer : IDisposable
     /// <summary>结束上传，记录包围盒。</summary>
     public void EndUpload(Bounds3 bounds) => Bounds = bounds;
 
+    /// <summary>
+    /// 抽样步长：1 表示全量绘制，N 表示每隔 N 个点画一个（索引抽样，覆盖全点云）。
+    /// </summary>
+    public int SampleStep { get; set; } = 1;
+
+    /// <summary>当前实际绘制的点数（抽样后）。</summary>
+    public int DrawnPointCount => SamplePointCount(_pointCount, SampleStep);
+
+    /// <summary>按步长抽样后的点数（纯计算，UI 与测试共用）。</summary>
+    public static int SamplePointCount(int pointCount, int step) =>
+        step <= 1 ? pointCount : (pointCount + step - 1) / step;
+
+    /// <summary>
+    /// 按步长重建索引缓冲；步长没变就什么都不做。
+    /// </summary>
+    /// <remarks>
+    /// 索引抽样而不是"只画前 1/N 个点"：点云按扫描顺序排列，前缀截断会让视野里只剩一小块区域。
+    /// 索引本身是 32 M/step 个 uint（1/4 抽样约 32 MB），相对点云 VBO 是零头。
+    /// </remarks>
+    private void EnsureIndices(int step)
+    {
+        if (step <= 1)
+        {
+            _indexStep = 1;
+            _indexCount = 0;
+            return;
+        }
+
+        if (_indexStep == step && _indexCount > 0)
+        {
+            return;
+        }
+
+        int count = (_pointCount + step - 1) / step;
+        var indices = new uint[count];
+        for (int i = 0; i < count; i++)
+        {
+            indices[i] = (uint)(i * step);
+        }
+
+        var gl = GlContext.Gl;
+        if (_ibo == 0)
+        {
+            _ibo = gl.GenBuffer();
+        }
+
+        gl.BindBuffer(GLEnum.ElementArrayBuffer, _ibo);
+        unsafe
+        {
+            fixed (uint* pointer = indices)
+            {
+                gl.BufferData(GLEnum.ElementArrayBuffer, (nuint)(count * sizeof(uint)), pointer, GLEnum.DynamicDraw);
+            }
+        }
+
+        gl.BindBuffer(GLEnum.ElementArrayBuffer, 0);
+
+        _indexStep = step;
+        _indexCount = count;
+    }
+
     /// <summary>画一帧。</summary>
     public void Draw(in Matrix4x4 viewProjection, OrbitCamera camera, int viewportHeight, PointColorMode mode, float pointSize)
     {
@@ -199,7 +267,22 @@ public sealed class PointCloudRenderer : IDisposable
         _shader.SetFloat("uMaxZ", Bounds.Max.Z);
         _shader.SetInt("uColorMode", (int)mode);
 
-        gl.DrawArrays(PrimitiveType.Points, 0, (uint)_pointCount);
+        int step = Math.Max(SampleStep, 1);
+        if (step <= 1)
+        {
+            gl.DrawArrays(PrimitiveType.Points, 0, (uint)_pointCount);
+        }
+        else
+        {
+            EnsureIndices(step);
+
+            // 索引缓冲挂在 VAO 上，VAO 已经 Bind，这里只需绑一下 IBO
+            gl.BindBuffer(GLEnum.ElementArrayBuffer, _ibo);
+            unsafe
+            {
+                gl.DrawElements(PrimitiveType.Points, (uint)_indexCount, GLEnum.UnsignedInt, (void*)0);
+            }
+        }
 
         gl.BindVertexArray(0);
         gl.Disable(EnableCap.DepthTest);
@@ -228,6 +311,12 @@ public sealed class PointCloudRenderer : IDisposable
             _vbo = 0;
         }
 
+        if (_ibo != 0)
+        {
+            gl.DeleteBuffer(_ibo);
+            _ibo = 0;
+        }
+
         if (_vao != 0)
         {
             gl.DeleteVertexArray(_vao);
@@ -237,5 +326,7 @@ public sealed class PointCloudRenderer : IDisposable
         _shader.Dispose();
         _shader = null;
         _pointCount = 0;
+        _indexStep = 0;
+        _indexCount = 0;
     }
 }

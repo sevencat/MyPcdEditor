@@ -53,11 +53,19 @@ AppBuilder.Configure<App>()
 | 层 | 测什么 | 工具 | 现状 |
 |---|---|---|---|
 | Core | PCD/PGM/yaml 解析、LZF、包围盒、零拷贝路径、视口变换、occupancy 语义、地面纹理降采样/膨胀 | 普通 xunit（v2） | 24 个用例 ✅ |
-| App 逻辑 | 窗口装配、按钮/滑块绑定、指针桥接、相机响应、状态栏文案 | headless + xunit v3 | 12 个用例 ✅ |
+| App 逻辑 | 窗口装配、按钮/滑块/下拉绑定、指针桥接、相机响应、状态栏文案、抽样点数换算 | headless + xunit v3 | 14 个用例 ✅ |
 | 2D 地图视觉 | `MapView` 绘制、栅格配色、缩放采样 | headless + Skia 截图读像素 | 已实现 ✅（见 §5） |
 | 地面纹理 | `GroundTexture` 数据含墙、构建耗时上限、PNG 落盘核对 | headless（真实包，无数据跳过） | 已实现 ✅（见 §5） |
 | GL 渲染 | 着色器编译、点云画出来没有、颜色/裁剪是否正常 | 真窗口 `--selftest`：渲染后 `glReadPixels` 统计非背景像素比例 | 已实现 ✅ |
-| 性能 | 打开耗时 / 上传 / FPS / 显存 | `PGV_TRACE_FPS=1` + `--load`，手工记录到 `docs/performance.md` | 已有基线 |
+| 性能 | 打开耗时 / 上传 / FPS / 显存 | `PGV_TRACE_FPS=1` + 采样脚本，手工记录到 `docs/performance.md` | 已有基线 |
+
+性能测量的两个环境变量（只影响启动初值，正常用界面开关）：
+
+| 变量 | 作用 |
+|---|---|
+| `PGV_TRACE_FPS=1` | 控制台按秒打印 `[FPS] xx.x WxH` |
+| `PGV_NO_GROUND=1` / `PGV_NO_MAP=1` | 启动即关掉地面纹理 / 收起 2D 面板，用来做 A/B 归因 |
+| `PGV_DRAW_STEP=N` | 抽样步长（界面「细节」下拉的等价物） |
 
 不做的事：不把 620 MB 样例数据塞进单测（有数据才跑、没数据 return，已经是现在的写法）；
 不在 CI 里跑 GL 用例（无 GPU 会误报）。

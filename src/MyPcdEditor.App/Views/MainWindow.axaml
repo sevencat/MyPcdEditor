@@ -27,6 +27,14 @@
         <TextBlock Text="点大小" VerticalAlignment="Center" Opacity="0.75" />
         <Slider x:Name="PointSizeSlider" Minimum="0.5" Maximum="8" Value="1.6" Width="150" VerticalAlignment="Center" />
 
+        <TextBlock Text="细节" VerticalAlignment="Center" Opacity="0.75" />
+        <ComboBox x:Name="DetailBox" SelectedIndex="0" Width="110" ToolTip.Tip="点数多时降密度换取帧率：点云按空间均匀抽样，不会只显示一部分">
+          <ComboBoxItem Content="全部" />
+          <ComboBoxItem Content="1/2" />
+          <ComboBoxItem Content="1/4" />
+          <ComboBoxItem Content="1/8" />
+        </ComboBox>
+
         <Border Width="1" Background="#2A303A" Margin="4,2" />
 
         <ToggleButton x:Name="MapToggle" Content="2D 地图" IsChecked="True" Click="OnMapToggleClick" />

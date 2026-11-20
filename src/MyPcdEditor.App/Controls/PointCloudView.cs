@@ -53,6 +53,17 @@ public sealed class PointCloudView : GlControlBase
     /// <summary>是否把栅格图铺在地面上。</summary>
     public bool ShowGround { get; set; } = true;
 
+    /// <summary>
+    /// 抽样步长（1 = 全量绘制，N = 每 N 个点画一个）。
+    /// </summary>
+    /// <remarks>
+    /// 32 M 点全量只有 17 FPS，瓶颈在顶点提交（视口放大到 2380×1312 帧率不变，说明不是填充）。
+    /// 索引抽样覆盖全点云，取 1/4 时 40 FPS、1/8 时 55 FPS。
+    /// <c>PGV_DRAW_STEP</c> 只用于基准测试，正常走工具栏「细节」。
+    /// </remarks>
+    public int DrawStep { get; set; } =
+        int.TryParse(Environment.GetEnvironmentVariable("PGV_DRAW_STEP"), out int step) && step > 0 ? step : 1;
+
     /// <summary>地面纹理整体透明度（1 = 按 occupancy 的 alpha 原样）。</summary>
     public float GroundOpacity { get; set; } = 1f;
 
@@ -186,6 +197,9 @@ public sealed class PointCloudView : GlControlBase
 
         PumpUpload(_renderer);
         PumpGround();
+
+        // 临时实验：PGV_DRAW_STEP 控制抽样步长，用来确认帧率与顶点数的关系
+        _renderer.SampleStep = DrawStep;
 
         float aspect = PixelHeight > 0 ? PixelWidth / (float)PixelHeight : 1f;
         Matrix4x4 viewProjection = _camera.GetViewProjection(aspect);

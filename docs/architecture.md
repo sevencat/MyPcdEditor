@@ -15,7 +15,7 @@ MyPcdEditor.App (Avalonia 12, win-x64)
         │   ├── Shader / GlObjectStats
         │   ├── GpuPointBuffer       : 分片上传、VBO 生命周期
         │   ├── OrbitCamera          : System.Numerics 矩阵
-        │   ├── PointCloudRenderer   : program + 绘制
+        │   ├── PointCloudRenderer   : program + 绘制（含索引抽样降载）
         │   └── GroundTextureRenderer: 单张栅格纹理 + 水平四边形（先画、开深度写入）
         │
         └── MyPcdEditor.Core （无 GL / 无 Avalonia 依赖）
