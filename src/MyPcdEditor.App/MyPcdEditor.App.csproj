@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>MyPcdEditor.App</RootNamespace>
+    <AssemblyName>MyPcdEditor</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 所有 Avalonia 包必须同一版本，混版会 TypeLoadException（docs/decisions.md ADR-002） -->
+    <PackageReference Include="Avalonia" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.6" />
+
+    <!--
+      ANGLE 原生库。Silk.NET 自带的 ANGLE 包内是 x86 二进制（BadImageFormatException），
+      这里用 Avalonia 的构建（真 x64，av_libglesv2.dll）。见 docs/decisions.md ADR-003。
+    -->
+    <PackageReference Include="Avalonia.Angle.Windows.Natives" Version="2.1.27548.20260419"
+                      GeneratePathProperty="true" ExcludeAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="$(PkgAvalonia_Angle_Windows_Natives)\runtimes\win-x64\native\*.dll"
+             Link="%(Filename)%(Extension)"
+             CopyToOutputDirectory="Always"
+             Visible="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MyPcdEditor.Core\MyPcdEditor.Core.csproj" />
+    <ProjectReference Include="..\MyPcdEditor.Rendering.Gles3\MyPcdEditor.Rendering.Gles3.csproj" />
+  </ItemGroup>
+</Project>

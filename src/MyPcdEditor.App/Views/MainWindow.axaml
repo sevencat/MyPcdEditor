@@ -1,0 +1,39 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:MyPcdEditor.App.Controls"
+        x:Class="MyPcdEditor.App.Views.MainWindow"
+        Title="MyPcdEditor — 点云 / 栅格地图"
+        Width="1360" Height="860"
+        MinWidth="900" MinHeight="600"
+        Background="#101215"
+        FontFamily="{StaticResource ContentControlThemeFontFamily}">
+
+  <DockPanel LastChildFill="True">
+
+    <Border DockPanel.Dock="Top" Background="#181C22" Padding="10,8" BorderBrush="#262B33" BorderThickness="0,0,0,1">
+      <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+        <Button x:Name="OpenButton" Content="打开地图包…" Click="OnOpenClick" />
+        <Button x:Name="FitButton" Content="适配视图 (F)" Click="OnFitClick" />
+        <Button x:Name="ResetButton" Content="复位 (R)" Click="OnResetClick" />
+
+        <Border Width="1" Background="#2A303A" Margin="4,2" />
+
+        <TextBlock Text="着色" VerticalAlignment="Center" Opacity="0.75" />
+        <ComboBox x:Name="ColorModeBox" SelectedIndex="0" Width="110">
+          <ComboBoxItem Content="高度" />
+          <ComboBoxItem Content="单色" />
+        </ComboBox>
+
+        <TextBlock Text="点大小" VerticalAlignment="Center" Opacity="0.75" />
+        <Slider x:Name="PointSizeSlider" Minimum="0.5" Maximum="8" Value="1.6" Width="150" VerticalAlignment="Center" />
+      </StackPanel>
+    </Border>
+
+    <Border DockPanel.Dock="Bottom" Background="#181C22" Padding="10,6" BorderBrush="#262B33" BorderThickness="0,1,0,0">
+      <TextBlock x:Name="StatusText" Text="就绪：从「打开地图包…」选择一个包含 pcd / pgm / yaml 的目录" FontSize="12" Opacity="0.85" TextWrapping="Wrap" />
+    </Border>
+
+    <controls:PointCloudView x:Name="View" />
+
+  </DockPanel>
+</Window>

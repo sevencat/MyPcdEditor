@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MyPcdEditor.Core/MyPcdEditor.Core.csproj" />
+    <Project Path="src/MyPcdEditor.Rendering.Gles3/MyPcdEditor.Rendering.Gles3.csproj" />
+    <Project Path="src/MyPcdEditor.App/MyPcdEditor.App.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MyPcdEditor.Core.Tests/MyPcdEditor.Core.Tests.csproj" />
+  </Folder>
+</Solution>

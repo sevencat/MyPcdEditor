@@ -4,14 +4,18 @@
 
 ## 当前状态
 
-**阶段 0：文档与计划就绪，代码尚未开始。**
+**阶段 1：3D 点云可看，2D 地图视图待做。**
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| M0 | 工程骨架 + ANGLE/Silk.NET 打通 | 未开始 |
-| M1 | PCD / PGM / yaml 只读 IO | 未开始 |
-| M2 | 3D 点云查看 + 2D 地图查看（只读） | 未开始 |
+| M0 | 工程骨架 + ANGLE/Silk.NET 打通 | 完成 |
+| M1 | PCD / PGM / yaml 只读 IO | 完成 |
+| M2 | 3D 点云查看 | 完成（基础版，无 LOD） |
+| M2b | 2D 地图视图 + 与点云叠加 | 未开始 |
 | M3+ | 编辑 / 优化算子 / 多图合并 | 规划中 |
+
+实机验证（AMD 集显 / ANGLE GLES 3.0 / Debug）：16.19 M 点 30 FPS，32.46 M 点 20 FPS，
+371 MB PCD 零拷贝加载 ~400 ms。详见 [`docs/performance.md`](docs/performance.md)。
 
 详细计划见 [`docs/plan.md`](docs/plan.md)，进度留痕见 [`docs/progress.md`](docs/progress.md)。
 
@@ -45,9 +49,21 @@ testdata/                      样例数据（不入库，见 .gitignore）
 dotnet restore
 dotnet build -c Debug
 dotnet test
+
+# 启动（可带目录直接打开）
+dotnet run --project src/MyPcdEditor.App -- testdata\map-20261116-180314
+
+# 无界面自检：只跑 IO 层，打印地图包与点云摘要
+dotnet run --project src/MyPcdEditor.App -- --load testdata\map-20261116-210819
+
+# 基准采集：把 FPS 打到控制台
+$env:PGV_TRACE_FPS="1"
+dotnet run --project src/MyPcdEditor.App -- testdata\map-20261116-210819
 ```
 
 要求 .NET SDK 11.x（本机 `11.0.100`）。运行需要 GPU 支持 OpenGL ES 3.0（ANGLE 会落到 D3D11）。
+
+操作：左键拖动旋转、右键拖动平移、滚轮缩放、`F` 适配、`R` 复位。
 
 ## 样例数据
 

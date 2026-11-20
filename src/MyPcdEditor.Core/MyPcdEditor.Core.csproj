@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>MyPcdEditor.Core</RootNamespace>
+    <AssemblyName>MyPcdEditor.Core</AssemblyName>
+    <!-- 纯数据/IO 层：不得引用 Avalonia 或 Silk.NET -->
+  </PropertyGroup>
+</Project>

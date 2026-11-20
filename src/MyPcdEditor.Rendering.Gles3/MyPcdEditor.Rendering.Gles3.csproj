@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>MyPcdEditor.Rendering.Gles3</RootNamespace>
+    <AssemblyName>MyPcdEditor.Rendering.Gles3</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ANGLE（GLES 3.x）绑定。EGL 入口由 Avalonia 提供，本项目不建上下文（见 docs/decisions.md ADR-003）。 -->
+    <PackageReference Include="Silk.NET.OpenGLES" Version="2.23.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MyPcdEditor.Core\MyPcdEditor.Core.csproj" />
+  </ItemGroup>
+</Project>
