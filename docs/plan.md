@@ -19,9 +19,10 @@
 
 - 打开「地图包目录」（PCD + PGM + yaml + toml + projected_origin）或单个文件
 - PCD 读取：`ascii` / `binary` / `binary_compressed`（LZF），含通用字段表
-- 3D 点云渲染：轨道相机、高度色带 / 单色、点大小、圆形点、AABB 一键适配
+- 3D 点云渲染：轨道相机、高度色带 / 单色、点大小、圆形点、抽样点一键适配
 - PGM(P5/P2) + yaml 的 2D 只读查看：缩放、平移、像素→世界坐标读数
-- 2D 地图作为地面纹理与点云同屏叠加（开关）
+- 2D 面板与 3D 视图并排，点云按世界 XY 投影叠加到栅格上（开关）
+- 栅格图铺进 3D 场景当地面（开关），用来核对点云与地图的贴合
 - 状态栏：点数、FPS、GL 渲染器、包围盒
 
 ### Out（本轮明确不做）
@@ -54,10 +55,11 @@
 
 - `PointCloudView : GlControlBase`：分片上传（64 MB/片）、12 B/点、单次 DrawArrays
 - 着色：高度 turbo 色带 / 单色；`gl_PointCoord` 圆形裁剪
-- `OrbitCamera`：左键旋转、右键平移、滚轮缩放、`F` 适配、`R` 复位
-- `MapView`：WriteableBitmap 视口最近邻采样（不整图转 RGBA）
-- PGM 地面纹理叠加（分块按需上传）
+- `OrbitCamera`：默认斜 45° 俯视、左键微调、右键平移、滚轮缩放、`F` 适配、`R` 复位
+- `MapView`：WriteableBitmap 视口采样（缩小时按覆盖范围 max-pooling，不整图转 RGBA）+ 点云 XY 叠加
 - 交付：16M / 32M 点数据流畅旋转，状态栏数据正确
+- 地面纹理（M2c，已补做）：PGM 降采样成单张 2048 级 RGBA8 纹理铺在点云下方，
+  墙线与点云墙体直接对位；实测 215 ms 构建、8 MB 显存、对帧率无影响（见 ADR-010）
 
 ### 收尾
 

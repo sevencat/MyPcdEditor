@@ -24,6 +24,12 @@ internal static class Program
             return;
         }
 
+        // 渲染自检：真窗口渲染一帧后读回像素，按统计结果给退出码（0 通过 / 1 失败）
+        if (args.Length >= 2 && args[0] is "--selftest" or "-t")
+        {
+            StartupOptions.SetSelfTestDirectory(args[1]);
+        }
+
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 

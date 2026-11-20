@@ -26,14 +26,56 @@
 
         <TextBlock Text="点大小" VerticalAlignment="Center" Opacity="0.75" />
         <Slider x:Name="PointSizeSlider" Minimum="0.5" Maximum="8" Value="1.6" Width="150" VerticalAlignment="Center" />
+
+        <Border Width="1" Background="#2A303A" Margin="4,2" />
+
+        <ToggleButton x:Name="MapToggle" Content="2D 地图" IsChecked="True" Click="OnMapToggleClick" />
+        <CheckBox x:Name="OverlayCheck" Content="叠加点云" IsChecked="True" VerticalAlignment="Center" />
+        <CheckBox x:Name="GroundCheck" Content="地面纹理" IsChecked="True" VerticalAlignment="Center" />
       </StackPanel>
     </Border>
 
     <Border DockPanel.Dock="Bottom" Background="#181C22" Padding="10,6" BorderBrush="#262B33" BorderThickness="0,1,0,0">
-      <TextBlock x:Name="StatusText" Text="就绪：从「打开地图包…」选择一个包含 pcd / pgm / yaml 的目录" FontSize="12" Opacity="0.85" TextWrapping="Wrap" />
+      <TextBlock x:Name="StatusText" Text="就绪：从「打开地图包…」选择一个包含 pcd / pgm / yaml 的目录 · 左键拖动微调视角、滚轮缩放、右键平移" FontSize="12" Opacity="0.85" TextWrapping="Wrap" />
     </Border>
 
-    <controls:PointCloudView x:Name="View" />
+    <Grid x:Name="ContentGrid" ColumnDefinitions="3*,4,2*">
+      <controls:PointCloudView x:Name="View" Grid.Column="0" />
+
+      <GridSplitter x:Name="MapSplitter" Grid.Column="1" ResizeDirection="Columns" Background="#262B33" />
+
+      <DockPanel x:Name="MapPanel" Grid.Column="2" Background="#12151A">
+        <Border DockPanel.Dock="Top" Background="#181C22" Padding="10,8" BorderBrush="#262B33" BorderThickness="0,0,0,1">
+          <StackPanel Spacing="6">
+            <TextBlock Text="2D 栅格地图" FontWeight="SemiBold" Opacity="0.9" />
+
+            <!-- 图例颜色必须与 OccupancyPalette 的常量一致 -->
+            <StackPanel Orientation="Horizontal" Spacing="12">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <Border Width="10" Height="10" Background="#E8ECF2" VerticalAlignment="Center" />
+                <TextBlock Text="占用" FontSize="11" Opacity="0.8" VerticalAlignment="Center" />
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <Border Width="10" Height="10" Background="#4A505C" VerticalAlignment="Center" />
+                <TextBlock Text="未知" FontSize="11" Opacity="0.8" VerticalAlignment="Center" />
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <Border Width="10" Height="10" Background="#1E2228" VerticalAlignment="Center" />
+                <TextBlock Text="空闲" FontSize="11" Opacity="0.8" VerticalAlignment="Center" />
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <Border Width="10" Height="10" Background="#FF7A18" VerticalAlignment="Center" />
+                <TextBlock Text="点云投影" FontSize="11" Opacity="0.8" VerticalAlignment="Center" />
+              </StackPanel>
+            </StackPanel>
+
+            <TextBlock x:Name="MapCursorText" Text="光标：—" FontSize="11" Opacity="0.7" />
+          </StackPanel>
+        </Border>
+
+        <controls:MapView x:Name="Map" />
+      </DockPanel>
+    </Grid>
 
   </DockPanel>
 </Window>

@@ -15,11 +15,13 @@ MyPcdEditor.App (Avalonia 12, win-x64)
         │   ├── Shader / GlObjectStats
         │   ├── GpuPointBuffer       : 分片上传、VBO 生命周期
         │   ├── OrbitCamera          : System.Numerics 矩阵
-        │   └── PointCloudRenderer   : program + 绘制
+        │   ├── PointCloudRenderer   : program + 绘制
+        │   └── GroundTextureRenderer: 单张栅格纹理 + 水平四边形（先画、开深度写入）
         │
         └── MyPcdEditor.Core （无 GL / 无 Avalonia 依赖）
             ├── Pcd/{PcdHeader,PcdReader,PcdWriter}
             ├── Grid/{PgmReader,PgmWriter,MapYaml,OccupancyMap}
+            ├── Grid/{OccupancyPalette,GroundTexture} : 语义配色 / 降采样成 GL 纹理数据
             └── MapPackage           : 目录级聚合（含 projected_origin / id_map）
 ```
 

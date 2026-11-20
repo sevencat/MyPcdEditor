@@ -188,7 +188,7 @@ public sealed class MapPackage
             throw new DirectoryNotFoundException($"目录不存在：{directory}");
         }
 
-        string?[] files = System.IO.Directory.GetFiles(directory);
+        string[] files = System.IO.Directory.GetFiles(directory);
         string? pcd = Pick(files, ".pcd");
         string pcdStem = pcd is null ? string.Empty : System.IO.Path.GetFileNameWithoutExtension(pcd);
 

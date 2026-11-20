@@ -87,6 +87,38 @@ public sealed unsafe class XyzCloud : IDisposable
         return new ReadOnlySpan<byte>(_basePointer + _dataOffset + offset, length);
     }
 
+    /// <summary>
+    /// 均匀抽样若干点，用于相机适配这类只需要"数据实际分布"的场景。
+    /// </summary>
+    /// <remarks>
+    /// 只用包围盒 8 个角点会严重高估数据范围（角上往往没有点），
+    /// 结果就是画面里点云缩成中间一小块。抽样点能把这一偏差消掉。
+    /// </remarks>
+    public Vector3[] SamplePoints(int maxSamples)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (PointCount == 0 || maxSamples <= 0)
+        {
+            return [];
+        }
+
+        int step = Math.Max(1, PointCount / maxSamples);
+        int count = (PointCount + step - 1) / step;
+        var points = new Vector3[count];
+
+        for (int i = 0, k = 0; k < count; i += step, k++)
+        {
+            ReadOnlySpan<byte> p = GetBytes((long)i * Stride, Stride);
+            points[k] = new Vector3(
+                BitConverter.ToSingle(p[..4]),
+                BitConverter.ToSingle(p.Slice(4, 4)),
+                BitConverter.ToSingle(p.Slice(8, 4)));
+        }
+
+        return points;
+    }
+
     /// <summary>打开 PCD 并转成 XYZ 字节视图（必要时零拷贝）。</summary>
     public static XyzCloud Open(string path)
     {

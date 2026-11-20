@@ -111,8 +111,10 @@ public sealed class Shader : IDisposable
             return;
         }
 
-        Matrix4x4 columnMajor = Matrix4x4.Transpose(matrix);
-        ReadOnlySpan<float> data = MemoryMarshal.CreateReadOnlySpan(ref columnMajor.M11, 16);
+        // System.Numerics 用行主序 + 行向量（v * M）；GLSL 用列主序 + 列向量（M * v）。
+        // 把行主序内存原样交给 GL，GLSL 会读成 M 的转置，于是 M^T * v 正好等于 v * M。
+        Matrix4x4 rowMajor = matrix;
+        ReadOnlySpan<float> data = MemoryMarshal.CreateReadOnlySpan(ref rowMajor.M11, 16);
         GlContext.Gl.UniformMatrix4(location, 1, false, data);
     }
 

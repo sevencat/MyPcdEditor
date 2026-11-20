@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Text;
 using MyPcdEditor.Core;
 using MyPcdEditor.Core.Grid;
@@ -65,6 +66,46 @@ public sealed class CoreIoTests
         Assert.False(cloud.IsZeroCopy);
         Assert.Equal(-1f, cloud.Bounds.Min.X);
         Assert.Equal(3f, cloud.Bounds.Max.Z);
+    }
+
+    [Fact]
+    public void SamplePoints_ReadsUniformSubset()
+    {
+        string path = WriteTemp("sample.pcd", """
+            VERSION 0.7
+            FIELDS x y z
+            SIZE 4 4 4
+            TYPE F F F
+            COUNT 1 1 1
+            WIDTH 4
+            HEIGHT 1
+            POINTS 4
+            DATA ascii
+            0 0 0
+            1 1 1
+            2 2 2
+            3 3 3
+            """);
+
+        try
+        {
+            using XyzCloud cloud = XyzCloud.Open(path);
+
+            Vector3[] all = cloud.SamplePoints(100);
+            Assert.Equal(4, all.Length);
+            Assert.Equal(0f, all[0].X);
+            Assert.Equal(3f, all[3].Z);
+
+            // 只取 2 个：步长 2，取第 0、2 个点
+            Vector3[] half = cloud.SamplePoints(2);
+            Assert.Equal(2, half.Length);
+            Assert.Equal(0f, half[0].X);
+            Assert.Equal(2f, half[1].X);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]
