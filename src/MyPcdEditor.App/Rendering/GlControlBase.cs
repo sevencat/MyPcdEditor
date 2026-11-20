@@ -361,7 +361,8 @@ public abstract class GlControlBase : OpenGlControlBase, ICustomHitTest
         if (Environment.GetEnvironmentVariable("PGV_TRACE_FPS") == "1")
         {
             string extra = this is Controls.PointCloudView view
-                ? $" 上传中={view.IsUploading} 进度={view.UploadProgress:P0} 帧={FrameIndex}"
+                ? $" 上传中={view.IsUploading} 进度={view.UploadProgress:P0} 帧={FrameIndex}" +
+                  $" 块={view.VisibleChunkCount}/{view.TotalChunkCount} 绘制={view.DrawnPointCount}"
                 : string.Empty;
             Console.WriteLine($"[FPS] {Fps:F1}  {PixelWidth}x{PixelHeight}{extra}");
         }

@@ -33,6 +33,16 @@ internal sealed class SelfTestSession
     /// <summary>视野判定抽样的点数（与相机拟合用的量级一致）。</summary>
     private const int TraceSampleCount = 8192;
 
+    /// <summary>等后台分块包围盒的上限：32 M 点 Debug 下约 2 s，超时就不等了（不能卡死自检）。</summary>
+    private static readonly TimeSpan ChunkWaitLimit = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// <c>PGV_SELFTEST_PARTIAL_VIEW=1</c>：允许点云超出视野。
+    /// 配合 <c>PGV_CAM_ZOOM</c> 用来看"放大到局部"时剔除前后的画面是否一致。
+    /// </summary>
+    private static readonly bool AllowPartialView =
+        Environment.GetEnvironmentVariable("PGV_SELFTEST_PARTIAL_VIEW") == "1";
+
     private readonly MainWindow _window;
     private readonly PointCloudView _view;
     private readonly MapView _map;
@@ -45,6 +55,7 @@ internal sealed class SelfTestSession
     private bool _captureRequested;
     private bool _finished;
     private bool _boundsOutOfView;
+    private bool _chunkWaitLogged;
 
     public SelfTestSession(MainWindow window, PointCloudView view, string directory)
     {
@@ -100,6 +111,9 @@ internal sealed class SelfTestSession
         Console.WriteLine(_view.GroundUploaded
             ? $"[SELFTEST] 地面纹理：已上传 {groundWidth}×{groundHeight}"
             : "[SELFTEST] 地面纹理：尚未上传（可能仍在等点云上传完成）");
+        Console.WriteLine(_view.TotalChunkCount > 0
+            ? $"[SELFTEST] 分块剔除：{_view.TotalChunkCount} 块 · 视锥剔除{(_view.CullingEnabled ? "开" : "关")}"
+            : "[SELFTEST] 分块剔除：未分块（后台仍在算，读回前会等它）");
         TraceBoundsProjection(cloud);
     }
 
@@ -210,6 +224,18 @@ internal sealed class SelfTestSession
             return;
         }
 
+        // 分块包围盒在后台算：等它接管再读回，否则测到的还是"不分块、整块画"那条路径
+        if (_view.PointCount > 0 && _view.TotalChunkCount == 0 && _watch.Elapsed < ChunkWaitLimit)
+        {
+            if (!_chunkWaitLogged)
+            {
+                _chunkWaitLogged = true;
+                Console.WriteLine("[SELFTEST] 等待后台分块包围盒…");
+            }
+
+            return;
+        }
+
         if (_view.RequestPixelCapture())
         {
             _captureRequested = true;
@@ -225,12 +251,15 @@ internal sealed class SelfTestSession
         }
 
         Console.WriteLine($"[SELFTEST] 像素统计：{stats.Describe()}");
+        Console.WriteLine(
+            $"[SELFTEST] 本帧提交：{_view.VisibleChunkCount}/{_view.TotalChunkCount} 块 · " +
+            $"{_view.DrawnPointCount:N0} 点");
         SaveFramePng(stats);
         Console.WriteLine($"[SELFTEST] 渲染信息：{_view.Info?.Describe() ?? "(无)"}  FPS={_view.Fps:F1}");
         Console.WriteLine($"[SELFTEST] 耗时：总计 {_watch.Elapsed.TotalMilliseconds:F0} ms" +
                           $"（上传完成于 {_uploadCompleteAt.TotalMilliseconds:F0} ms）");
 
-        if (_boundsOutOfView)
+        if (_boundsOutOfView && !AllowPartialView)
         {
             Finish(false, "点云超出视野：Fit 没按视口宽高比框住数据（默认视角失效）");
             return;
@@ -245,6 +274,13 @@ internal sealed class SelfTestSession
         if (_window.HasGrid && !_view.GroundUploaded)
         {
             Finish(false, "包内有 PGM，但地面纹理没有上传到 GL（纹理路径回归）");
+            return;
+        }
+
+        // 剔除只能"少画看不见的块"。全剔光说明视锥判定或分块包围盒算错了
+        if (_view.TotalChunkCount > 0 && _view.VisibleChunkCount == 0)
+        {
+            Finish(false, $"分块剔除把 {_view.TotalChunkCount} 块全剔了（视锥判定或分块包围盒有误）");
             return;
         }
 

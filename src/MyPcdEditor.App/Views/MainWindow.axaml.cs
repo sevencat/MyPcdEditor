@@ -258,7 +258,14 @@ public sealed partial class MainWindow : Window
             ? $" · 上传 {view.UploadProgress:P0}"
             : string.Empty;
 
-        SetStatus($"{_detail}{_sampleDetail}{_gridDetail} · {size} · {control.Fps:F0} FPS{progress} · {renderer}");
+        // 剔除真的省下东西时才提，平时「62/62」只是噪声
+        string chunks = control is PointCloudView { TotalChunkCount: > 0 } culled
+                        && culled.VisibleChunkCount < culled.TotalChunkCount
+            ? $" · 块 {culled.VisibleChunkCount}/{culled.TotalChunkCount}"
+            : string.Empty;
+
+        SetStatus(
+            $"{_detail}{_sampleDetail}{chunks}{_gridDetail} · {size} · {control.Fps:F0} FPS{progress} · {renderer}");
     }
 
     /// <summary>栅格图概览（已读到的图直接复用，避免再解一遍 30 M px）。</summary>

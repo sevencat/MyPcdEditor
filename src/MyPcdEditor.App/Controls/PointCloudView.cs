@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Numerics;
 using Avalonia.Input;
 using Avalonia.Threading;
@@ -42,6 +44,29 @@ public sealed class PointCloudView : GlControlBase
     private bool _capturePending;
     private Vector3[]? _fitSamples;
 
+    // 分块包围盒在后台线程扫（与 GL 上传并行）：_readyChunks 是算好待渲染线程取走的结果
+    private CancellationTokenSource? _chunkBuildCts;
+    private Task? _chunkBuildTask;
+    private ChunkRange[]? _readyChunks;
+    private long _chunkBoundsTicks;
+
+    /// <summary>每块点数（<c>PGV_CHUNK_POINTS</c> 可覆盖，用于比较剔除粒度）。</summary>
+    private static readonly int ChunkPoints =
+        int.TryParse(Environment.GetEnvironmentVariable("PGV_CHUNK_POINTS"), out int chunkPoints)
+        && chunkPoints > 0
+            ? chunkPoints
+            : ChunkBoundsBuilder.DefaultChunkPoints;
+
+    /// <summary><c>PGV_CAM_ZOOM</c> 启动拉近倍数（1 = 不额外缩放，见 <see cref="ApplyStartupZoom"/>）。</summary>
+    private static readonly float StartupZoom =
+        float.TryParse(
+            Environment.GetEnvironmentVariable("PGV_CAM_ZOOM"),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out float zoom) && zoom > 0 && MathF.Abs(zoom - 1f) > 1e-4f
+            ? zoom
+            : 1f;
+
     /// <summary>当前相机（诊断与测试用）。</summary>
     public OrbitCamera Camera => _camera;
 
@@ -66,6 +91,22 @@ public sealed class PointCloudView : GlControlBase
 
     /// <summary>地面纹理整体透明度（1 = 按 occupancy 的 alpha 原样）。</summary>
     public float GroundOpacity { get; set; } = 1f;
+
+    /// <summary>视锥剔除开关（<c>PGV_NO_CULL=1</c> 时默认关闭）。</summary>
+    public bool CullingEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("PGV_NO_CULL") != "1";
+
+    /// <summary>已上传的点数（0 = 还没有点云）。</summary>
+    public int PointCount => _renderer?.PointCount ?? 0;
+
+    /// <summary>分块总数（0 = 还没拿到分块信息）。</summary>
+    public int TotalChunkCount => _renderer?.TotalChunkCount ?? 0;
+
+    /// <summary>上一帧通过视锥测试的块数。</summary>
+    public int VisibleChunkCount => _renderer?.VisibleChunkCount ?? 0;
+
+    /// <summary>上一帧实际提交的点数（抽样 + 剔除之后）。</summary>
+    public int DrawnPointCount => _renderer?.DrawnPointCount ?? 0;
 
     /// <summary>地面纹理是否已上传（自检/诊断用）。</summary>
     public bool GroundUploaded => _groundRenderer is { HasTexture: true };
@@ -196,10 +237,11 @@ public sealed class PointCloudView : GlControlBase
         }
 
         PumpUpload(_renderer);
+        ApplyReadyChunks(_renderer);
         PumpGround();
 
-        // 临时实验：PGV_DRAW_STEP 控制抽样步长，用来确认帧率与顶点数的关系
         _renderer.SampleStep = DrawStep;
+        _renderer.CullingEnabled = CullingEnabled;
 
         float aspect = PixelHeight > 0 ? PixelWidth / (float)PixelHeight : 1f;
         Matrix4x4 viewProjection = _camera.GetViewProjection(aspect);
@@ -245,11 +287,19 @@ public sealed class PointCloudView : GlControlBase
 
         if (pending is not null)
         {
+            // 先停掉旧云上的后台扫描：它读的是映射内存，Dispose 之后不能再有人扫
+            CancelChunkBuild();
+
             _activeCloud?.Dispose();
             _activeCloud = pending;
             _uploading = true;
             _uploadOffset = 0;
             UploadProgress = 0;
+
+            // 分块包围盒要扫全云（32 M 点 Debug 下约 1.4 s），放后台与 GL 上传并行；
+            // 算完之前不剔除（chunks 为空就整块画），算完后才由 ApplyReadyChunks 接管。
+            StartChunkBuild(pending);
+
             renderer.BeginUpload(pending.PointCount);
         }
 
@@ -268,7 +318,12 @@ public sealed class PointCloudView : GlControlBase
         }
 
         int length = (int)Math.Min(ChunkBytes, remaining);
+
+        // 分片按点对齐（12 字节）：分块包围盒按点索引累加，半截点会让块索引对不上
+        length -= length % XyzCloud.Stride;
+
         renderer.UploadChunk(cloud.GetBytes(_uploadOffset, length), _uploadOffset);
+
         _uploadOffset += length;
         UploadProgress = cloud.ByteLength == 0 ? 1 : (double)_uploadOffset / cloud.ByteLength;
 
@@ -335,17 +390,190 @@ public sealed class PointCloudView : GlControlBase
     private void FinishUpload(PointCloudRenderer renderer, XyzCloud cloud)
     {
         renderer.EndUpload(cloud.Bounds);
+
         FitCameraToCloud(cloud);
+        ApplyStartupZoom();
+
         _uploading = false;
         UploadProgress = 1;
 
         Console.WriteLine($"[GL] 点云上传完成：{cloud.PointCount:N0} 点 / {cloud.ByteLength / 1024 / 1024} MB");
 
+        // 分块表可能还在后台算：到了就在后续帧里由 ApplyReadyChunks 接管，不必等它
         Dispatcher.UIThread.Post(() => CloudReady?.Invoke(cloud), DispatcherPriority.Background);
+    }
+
+    /// <summary>
+    /// 后台扫描全云算分块包围盒。
+    /// </summary>
+    /// <remarks>
+    /// 32 M 点 Debug 下约 1.4 s。塞进上传泵会给每片 64 MB 上传后加 200 ms 以上的停顿，
+    /// 所以放后台线程跑，与 GL 上传并行；算完之前不剔除（chunks 为空就整块画）。
+    /// </remarks>
+    private void StartChunkBuild(XyzCloud cloud)
+    {
+        CancelChunkBuild();
+
+        var cts = new CancellationTokenSource();
+        int chunkPoints = ChunkPoints;
+        long startTicks = Stopwatch.GetTimestamp();
+
+        lock (_sync)
+        {
+            _chunkBuildCts = cts;
+
+            // 在锁内起任务：任务写结果要拿同一把锁，不会出现"结果先于登记"的窗口
+            _chunkBuildTask = Task.Run(() =>
+            {
+                ChunkRange[] chunks;
+                try
+                {
+                    chunks = ChunkBoundsBuilder.Build(cloud, chunkPoints, cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[GL] 分块包围盒计算失败：{ex.Message}");
+                    return;
+                }
+
+                long elapsed = Stopwatch.GetTimestamp() - startTicks;
+
+                lock (_sync)
+                {
+                    // 期间换了云或已经释放：结果作废，否则会把旧块表套到新点云上
+                    if (!ReferenceEquals(_chunkBuildCts, cts))
+                    {
+                        return;
+                    }
+
+                    _readyChunks = chunks;
+                    _chunkBoundsTicks = elapsed;
+                }
+            });
+        }
+    }
+
+    /// <summary>
+    /// 取消后台分块扫描并等它退出。
+    /// </summary>
+    /// <remarks>
+    /// 扫描读的是点云的映射内存，<see cref="XyzCloud.Dispose"/> 之后不能还有人在读。
+    /// 切片内部不检查取消（64 MB 一片最多几百毫秒），所以必须等，不能只发个取消就走。
+    /// </remarks>
+    private void CancelChunkBuild()
+    {
+        CancellationTokenSource? cts;
+        Task? task;
+
+        lock (_sync)
+        {
+            cts = _chunkBuildCts;
+            task = _chunkBuildTask;
+            _chunkBuildCts = null;
+            _chunkBuildTask = null;
+            _readyChunks = null;
+        }
+
+        if (cts is null)
+        {
+            return;
+        }
+
+        cts.Cancel();
+
+        if (task is not null)
+        {
+            try
+            {
+                task.Wait(TimeSpan.FromSeconds(10));
+            }
+            catch (AggregateException)
+            {
+                // 任务内部已经打过日志
+            }
+        }
+
+        // 超时说明任务可能还在用 token，此时不 Dispose（宁可留个 CTS，也不要放它去用已释放的 token）
+        if (task is null || task.IsCompleted)
+        {
+            cts.Dispose();
+        }
+    }
+
+    /// <summary>把后台算好的分块表交给渲染器（只能在渲染回调里调）。</summary>
+    private void ApplyReadyChunks(PointCloudRenderer renderer)
+    {
+        ChunkRange[]? chunks;
+
+        lock (_sync)
+        {
+            chunks = _readyChunks;
+            if (chunks is null)
+            {
+                return;
+            }
+
+            _readyChunks = null;
+        }
+
+        renderer.SetChunks(chunks);
+
+        double costMs = _chunkBoundsTicks * 1000.0 / Stopwatch.Frequency;
+        Console.WriteLine($"[GL] 分块就绪：{chunks.Length} 块 · 后台扫描 {costMs:F0} ms");
+
+        if (_activeCloud is not null)
+        {
+            PrintChunkLocality(chunks, _activeCloud.Bounds);
+        }
+    }
+
+    /// <summary>
+    /// 打印分块的空间紧凑度：块的对角线越接近全图，说明点顺序在空间上越分散，剔除能省的越少。
+    /// </summary>
+    private static void PrintChunkLocality(ChunkRange[] chunks, Bounds3 bounds)
+    {
+        if (chunks.Length == 0)
+        {
+            return;
+        }
+
+        double cloudDiagonal = bounds.Size.Length();
+        double sum = 0;
+        double max = 0;
+
+        foreach (ChunkRange chunk in chunks)
+        {
+            double diagonal = chunk.Bounds.Size.Length();
+            sum += diagonal;
+            max = Math.Max(max, diagonal);
+        }
+
+        Console.WriteLine(
+            $"[GL] 分块：{chunks.Length} 块 · 块对角线 平均 {sum / chunks.Length:F0} m / 最大 {max:F0} m" +
+            $"（全图 {cloudDiagonal:F0} m）");
+    }
+
+    /// <summary>
+    /// <c>PGV_CAM_ZOOM=0.2</c>：拟合后把相机拉近，用于测量"只看局部"时的剔除效果。
+    /// 只影响启动那一次，按 F / R 仍是正常适配。
+    /// </summary>
+    private void ApplyStartupZoom()
+    {
+        if (StartupZoom != 1f)
+        {
+            _camera.Distance *= StartupZoom;
+        }
     }
 
     protected override void OnGlReleased()
     {
+        // 后台扫描读的是点云的映射内存，必须先停再释放
+        CancelChunkBuild();
+
         _renderer?.Dispose();
         _renderer = null;
 

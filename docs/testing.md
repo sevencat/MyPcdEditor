@@ -52,20 +52,23 @@ AppBuilder.Configure<App>()
 
 | 层 | 测什么 | 工具 | 现状 |
 |---|---|---|---|
-| Core | PCD/PGM/yaml 解析、LZF、包围盒、零拷贝路径、视口变换、occupancy 语义、地面纹理降采样/膨胀 | 普通 xunit（v2） | 24 个用例 ✅ |
-| App 逻辑 | 窗口装配、按钮/滑块/下拉绑定、指针桥接、相机响应、状态栏文案、抽样点数换算 | headless + xunit v3 | 14 个用例 ✅ |
+| Core | PCD/PGM/yaml 解析、LZF、包围盒、零拷贝路径、视口变换、occupancy 语义、地面纹理降采样/膨胀、视锥剔除/分块包围盒 | 普通 xunit（v2） | 34 个用例 ✅ |
+| App 逻辑 | 窗口装配、按钮/滑块/下拉绑定、指针桥接、相机响应、状态栏文案、抽样点数换算、抽样索引按块分区 | headless + xunit v3 | 15 个用例 ✅ |
 | 2D 地图视觉 | `MapView` 绘制、栅格配色、缩放采样 | headless + Skia 截图读像素 | 已实现 ✅（见 §5） |
 | 地面纹理 | `GroundTexture` 数据含墙、构建耗时上限、PNG 落盘核对 | headless（真实包，无数据跳过） | 已实现 ✅（见 §5） |
 | GL 渲染 | 着色器编译、点云画出来没有、颜色/裁剪是否正常 | 真窗口 `--selftest`：渲染后 `glReadPixels` 统计非背景像素比例 | 已实现 ✅ |
 | 性能 | 打开耗时 / 上传 / FPS / 显存 | `PGV_TRACE_FPS=1` + 采样脚本，手工记录到 `docs/performance.md` | 已有基线 |
 
-性能测量的两个环境变量（只影响启动初值，正常用界面开关）：
+性能测量与 A/B 归因用的环境变量（只影响启动初值，正常用界面开关）：
 
 | 变量 | 作用 |
 |---|---|
-| `PGV_TRACE_FPS=1` | 控制台按秒打印 `[FPS] xx.x WxH` |
+| `PGV_TRACE_FPS=1` | 控制台按秒打印 `[FPS] xx.x WxH`（含 `块=可见/总数 绘制=N`） |
 | `PGV_NO_GROUND=1` / `PGV_NO_MAP=1` | 启动即关掉地面纹理 / 收起 2D 面板，用来做 A/B 归因 |
 | `PGV_DRAW_STEP=N` | 抽样步长（界面「细节」下拉的等价物） |
+| `PGV_NO_CULL=1` | 关掉分块视锥剔除（剔除开/关 A/B，性能结论都靠它） |
+| `PGV_CAM_ZOOM=0.08` | 拟合后把相机距离乘该倍数，用来模拟"放大看局部"的剔除收益 |
+| `PGV_CHUNK_POINTS=N` | 每块点数（默认 64 K；设成 33554432 就是"单块"，即不分块对照） |
 
 不做的事：不把 620 MB 样例数据塞进单测（有数据才跑、没数据 return，已经是现在的写法）；
 不在 CI 里跑 GL 用例（无 GPU 会误报）。
@@ -80,8 +83,12 @@ dotnet run --project src/MyPcdEditor.App -- --selftest testdata\map-20261116-180
 $env:PGV_SELFTEST_PNG="$env:TEMP\frame.png"
 ```
 
-流程：加载地图包 → 等 GPU 分片上传完成 → 用 `cloud.SamplePoints(8192)` 投到 NDC 检查视野 →
-再画 3 帧 → `glReadPixels` 读回整帧 → 统计 → 判定 → `lifetime.Shutdown(exitCode)`。
+流程：加载地图包 → 等 GPU 分片上传完成 → **等后台分块包围盒就绪（上限 15 s）** →
+用 `cloud.SamplePoints(8192)` 投到 NDC 检查视野 → 再画 3 帧 → `glReadPixels` 读回整帧 →
+统计 → 判定 → `lifetime.Shutdown(exitCode)`。
+
+等分块这一步不能省：分块扫描在后台与上传并行（32 M 点约 1.9 s），上传先结束时
+`TotalChunkCount` 还是 0，读回测到的就是"不分块、整块画"那条路径，剔除等于没验。
 
 判据：
 
@@ -94,6 +101,7 @@ $env:PGV_SELFTEST_PNG="$env:TEMP\frame.png"
 | `MeanLuminance` | 全图平均亮度（0..255） | 只记录 |
 | 2D 地图已加载 | 包内有 PGM 但 `MapView` 为空 | 失败 |
 | 地面纹理已上传 | 包内有 PGM 但 `_groundRenderer.HasTexture` 为 false | 失败 |
+| 分块剔除未全剔 | `TotalChunkCount > 0` 但 `VisibleChunkCount == 0` | 失败 |
 
 NDC 检查用**抽样点**而不是包围盒 8 角点：斜置 / 细长的点云，角点常常落在数据之外，
 按角点判定会误报"超出视野"（实测角点范围 x=[-0.79, 1.04]、y=[-2.76, 0.75]，而抽样点只在
@@ -103,9 +111,26 @@ x=[-0.69, 0.88]、y=[-0.89, 0.47]）。角点范围仍会打印出来作参考�
 
 | 数据集 | 非背景 | 唯一色 | 彩色 | 总耗时 | 结果 |
 |---|---|---|---|---|---|
-| 16.19 M 点 `180314` | 37.7% | 217 | 25.4% | 1.4 s | PASS（0） |
-| 32.46 M 点 `210819` | 49.7% | 234 | 30.1% | 5.5 s | PASS（0） |
+| 16.19 M 点 `180314` | 36.9% | 214 | 25.4% | 2.2 s | PASS（0） |
+| 32.46 M 点 `210819` | 49.7% | 234 | 30.1% | 6.4 s | PASS（0） |
 | 空目录 | — | — | — | 0.4 s | FAIL（1） |
+
+（耗时含等待后台分块扫描：16 M 上传本身就 0.7 s，但要等到扫描结束才读回。）
+
+### 剔除正确性对拍（放大到局部）
+
+```powershell
+$env:PGV_CAM_ZOOM="0.08"; $env:PGV_SELFTEST_PARTIAL_VIEW="1"
+$env:PGV_SELFTEST_PNG="$env:TEMP\zoom_cull.png"
+dotnet run --project src/MyPcdEditor.App -- --selftest testdata\map-20261116-210819
+
+$env:PGV_NO_CULL="1"; $env:PGV_SELFTEST_PNG="$env:TEMP\zoom_nocull.png"
+dotnet run --project src/MyPcdEditor.App -- --selftest testdata\map-20261116-210819
+```
+
+放大后点云必然出视野，所以要 `PGV_SELFTEST_PARTIAL_VIEW=1` 跳过"完整在视野内"那条断言。
+两次的**像素统计必须逐项一致**（剔除只能少画看不见的块）：实测非背景 100.0%、唯一色 132、
+平均亮度 68.5、彩色 6.6% 完全相同，而 `本帧提交` 从 496 块/32.46 M 点降到 170 块/11.10 M 点。
 
 同时打印 2D 地图状态（`已加载 · 1.26 px/m · 叠加 202,422 点`）与地面纹理尺寸
 （`已上传 1703×1126`）；包内有 PGM 但 `MapView` 没加载、或地面纹理没上传到 GL，都直接判失败。
@@ -114,7 +139,8 @@ x=[-0.69, 0.88]、y=[-0.89, 0.47]）。角点范围仍会打印出来作参考�
 （浅灰蓝底板）铺满地图范围后的正常变化——判据看的是"有没有内容"，不受影响。
 
 它能发现的问题：GL 上下文起不来、着色器编译失败（渲染回调异常 + 画面只剩背景）、点云没画出来
-（非背景 ≈ 0）、点云飞出视野（NDC 越界）、色带失效（彩色占比 ≈ 0）、上传卡死（180 s 超时）。
+（非背景 ≈ 0）、点云飞出视野（NDC 越界）、色带失效（彩色占比 ≈ 0）、上传卡死（180 s 超时）、
+分块视锥剔除误杀（块全被剔 → 画面空；或在放大场景下与 `PGV_NO_CULL=1` 的像素统计不一致）。
 
 限制：需要可用的桌面会话与 GPU（会真的开一个窗口）；无桌面/无 GPU 的 CI 不要跑这条，用 `--load` 代替。
 

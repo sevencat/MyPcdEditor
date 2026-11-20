@@ -15,13 +15,15 @@ MyPcdEditor.App (Avalonia 12, win-x64)
         │   ├── Shader / GlObjectStats
         │   ├── GpuPointBuffer       : 分片上传、VBO 生命周期
         │   ├── OrbitCamera          : System.Numerics 矩阵
-        │   ├── PointCloudRenderer   : program + 绘制（含索引抽样降载）
+        │   ├── PointCloudRenderer   : program + 绘制（索引抽样降载、按块视锥剔除）
         │   └── GroundTextureRenderer: 单张栅格纹理 + 水平四边形（先画、开深度写入）
         │
         └── MyPcdEditor.Core （无 GL / 无 Avalonia 依赖）
             ├── Pcd/{PcdHeader,PcdReader,PcdWriter}
             ├── Grid/{PgmReader,PgmWriter,MapYaml,OccupancyMap}
             ├── Grid/{OccupancyPalette,GroundTexture} : 语义配色 / 降采样成 GL 纹理数据
+            ├── Geometry/Frustum      : 从 view-projection 提 6 平面 + P 顶点 AABB 测试
+            ├── PointCloud/ChunkedBounds : 按连续点区间累加块包围盒（可后台线程整云扫描）
             └── MapPackage           : 目录级聚合（含 projected_origin / id_map）
 ```
 
@@ -57,6 +59,8 @@ _gl = new Silk.NET.OpenGLES.GL(new LamdaNativeContext(glInterface.GetProcAddress
 
 - **文件解析**：`Task.Run` 后台线程，产出 `PointCloudData`（SOA 或 MMF 视图）。
 - **GPU 上传**：只能在渲染回调里做。控件持有 `_pendingCloud` 字段，后台完成后赋值 + `RequestNextFrameRendering()`；`OnFrame` 开头检测并上传（分片，每帧最多 N 片，避免长时间占满一帧）。
+- **分块包围盒**：`ChunkBoundsBuilder.Build` 也在后台线程整云扫描（32 M 点 Debug 下 1.4~1.9 s），与上传并行；结果放 `_readyChunks`，渲染回调里的 `ApplyReadyChunks` 取走并 `SetChunks`。算完之前不分块（整块画）。
+- **后台扫描的生命周期**：它读的是点云的映射内存，换图/`OnGlReleased` 前必须 `CancelChunkBuild()`——取消**并且等待**任务退出（切片内部不检查取消，64 MB 一片要几百毫秒），否则会和 `XyzCloud.Dispose` 抢指针。
 - **UI 状态**：`FrameStatsUpdated` 事件来自渲染线程，必须 `Dispatcher.UIThread.Post` 回 UI 线程再更新状态栏。
 
 ## 5. 内存/显存预算（样例数据实测）

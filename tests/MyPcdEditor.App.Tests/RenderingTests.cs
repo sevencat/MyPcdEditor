@@ -61,6 +61,40 @@ public sealed class RenderingTests
         Assert.Equal(10, PointCloudRenderer.SamplePointCount(10, -3));
     }
 
+    /// <summary>分块在抽样索引缓冲里的区间：块与块拼接后要正好覆盖全部索引。</summary>
+    [Fact]
+    public void SampleIndexRange_PartitionsIndexBuffer()
+    {
+        // 步长 4、共 10 点 → 索引 0,4,8
+        Assert.Equal((0, 3), PointCloudRenderer.SampleIndexRange(0, 10, 4));
+
+        // 前 4 个点 → 索引 0（索引 4 属于下一块）
+        Assert.Equal((0, 1), PointCloudRenderer.SampleIndexRange(0, 4, 4));
+
+        // [4,8) → 索引 4
+        Assert.Equal((1, 1), PointCloudRenderer.SampleIndexRange(4, 4, 4));
+
+        // [8,10) → 索引 8
+        Assert.Equal((2, 1), PointCloudRenderer.SampleIndexRange(8, 2, 4));
+
+        // 区间内没有落在 step 倍数上的点
+        Assert.Equal((1, 0), PointCloudRenderer.SampleIndexRange(1, 2, 4));
+
+        // 不抽样时就是顶点区间
+        Assert.Equal((0, 512), PointCloudRenderer.SampleIndexRange(1024, 512, 1));
+
+        // 块区间必须连续且首尾相接，否则剔除时会漏画
+        int covered = 0;
+        for (int first = 0; first < 1024; first += 128)
+        {
+            (int start, int count) = PointCloudRenderer.SampleIndexRange(first, 128, 3);
+            Assert.Equal(covered, start);
+            covered += count;
+        }
+
+        Assert.Equal(PointCloudRenderer.SamplePointCount(1024, 3), covered);
+    }
+
     /// <summary>工具栏「细节」下拉必须真的改到视图的抽样步长。</summary>
     [AvaloniaFact]
     public void DetailBox_SetsDrawStep()
