@@ -31,6 +31,7 @@
 371 MB PCD 零拷贝加载 ~400 ms；地面纹理构建 215 ms / 8 MB 显存 / 对帧率无影响。
 瓶颈是顶点提交而非填充（视口放大 67% 帧率不变），所以提速手段是抽样（降密度）与视锥剔除（不画视野外）。
 分块按连续点区间切（32.46 M → 496 块，每块 64 K 点），放大时只提交 34% 的点且画面像素统计与不剔除完全一致。
+Release 构建复核结果与 Debug 一致（帧率由 GPU 顶点提交决定），打开 32 M 数据 2.9 s。
 详见 [`docs/performance.md`](docs/performance.md)。
 
 详细计划见 [`docs/plan.md`](docs/plan.md)，进度留痕见 [`docs/progress.md`](docs/progress.md)。
