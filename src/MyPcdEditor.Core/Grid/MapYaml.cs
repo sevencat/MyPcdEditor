@@ -124,6 +124,32 @@ public sealed class MapYaml
         };
     }
 
+    /// <summary>序列化成 map_server 认的 yaml 文本（<paramref name="imagePath"/> 原样写进 image 字段）。</summary>
+    public string ToYaml(string imagePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(imagePath);
+
+        var text = new System.Text.StringBuilder();
+        text.Append("image: ").Append(imagePath).Append('\n');
+        text.Append("resolution: ").Append(Resolution.ToString("G9", CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("origin: [")
+            .Append(OriginX.ToString("G9", CultureInfo.InvariantCulture)).Append(", ")
+            .Append(OriginY.ToString("G9", CultureInfo.InvariantCulture)).Append(", ")
+            .Append(OriginYaw.ToString("G9", CultureInfo.InvariantCulture)).Append("]\n");
+        text.Append("negate: ").Append(Negate ? 1 : 0).Append('\n');
+        text.Append("occupied_thresh: ").Append(OccupiedThresh.ToString("G9", CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("free_thresh: ").Append(FreeThresh.ToString("G9", CultureInfo.InvariantCulture)).Append('\n');
+
+        return text.ToString();
+    }
+
+    /// <summary>写出 yaml（与 <see cref="Load"/> 对称，供"导出优化结果"用）。</summary>
+    public void Save(string path, string imagePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        File.WriteAllText(path, ToYaml(imagePath));
+    }
+
     /// <summary>地图在世界系里的覆盖范围（左下 + 右上）。</summary>
     public (double MinX, double MinY, double MaxX, double MaxY) WorldExtent(int width, int height)
         => (OriginX, OriginY, OriginX + (width * Resolution), OriginY + (height * Resolution));

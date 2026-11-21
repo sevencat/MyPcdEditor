@@ -37,6 +37,47 @@
 
         <Border Width="1" Background="#2A303A" Margin="4,2" />
 
+        <Button x:Name="OptimizeButton" Content="优化 ▾" ToolTip.Tip="对当前点云 / 栅格做算子处理，处理结果直接替换视图中的数据（原始文件不动）">
+          <Button.Flyout>
+            <MenuFlyout>
+              <MenuItem Header="点云 · 体素降采样…" Click="OnVoxelDownsampleClick" />
+              <MenuItem Header="点云 · 统计去噪 (SOR)…" Click="OnOutlierRemovalClick" />
+              <MenuItem Header="点云 · 按范围裁剪…" Click="OnCropClick" />
+              <Separator />
+              <MenuItem Header="栅格 · 去毛刺" Click="OnDespeckleClick" />
+              <MenuItem Header="栅格 · 补洞" Click="OnCloseHolesClick" />
+              <MenuItem Header="栅格 · 去孤岛…" Click="OnRemoveIslandsClick" />
+              <Separator />
+              <MenuItem Header="导出当前结果…" Click="OnExportClick" />
+              <MenuItem Header="替换当前地图包（覆盖原文件）…" Click="OnReplaceClick" />
+              <MenuItem Header="撤销全部优化（重新加载）" Click="OnRevertClick" />
+            </MenuFlyout>
+          </Button.Flyout>
+        </Button>
+
+        <Border Width="1" Background="#2A303A" Margin="4,2" />
+
+        <Button x:Name="MergeButton" Content="合并 ▾"
+                ToolTip.Tip="把另一个地图包并进当前包：先按 .projected_origin 锚点定初值，再用点云 ICP 精配准，最后拼接点云与栅格">
+          <Button.Flyout>
+            <MenuFlyout>
+              <MenuItem Header="合并另一个地图包…" Click="OnMergeClick" />
+              <MenuItem x:Name="ReportMenuItem" Header="查看上次对齐报告…" IsEnabled="False" Click="OnReportClick" />
+            </MenuFlyout>
+          </Button.Flyout>
+        </Button>
+        <Button x:Name="CancelMergeButton" Content="取消合并" IsVisible="False" Click="OnCancelMergeClick" />
+
+        <Border Width="1" Background="#2A303A" Margin="4,2" />
+
+        <ToggleButton x:Name="BoxSelectToggle" Content="框选 (B)"
+                      ToolTip.Tip="打开后用左键拖出矩形：框内的点会被删掉（Shift + 拖 = 只保留框内）。原始文件不动，重新加载即可撤销" />
+
+        <ToggleButton x:Name="BrushToggle" Content="笔刷 (E)"
+                      ToolTip.Tip="打开后按住左键涂抹：涂到的点会被删掉。E 切换模式，右边滑块调半径；原始文件不动，重新加载即可撤销" />
+        <Slider x:Name="BrushSizeSlider" Minimum="4" Maximum="160" Value="32" Width="110"
+                VerticalAlignment="Center" ToolTip.Tip="笔刷半径（像素）" />
+
         <ToggleButton x:Name="MapToggle" Content="2D 地图" IsChecked="True" Click="OnMapToggleClick" />
         <CheckBox x:Name="OverlayCheck" Content="叠加点云" IsChecked="True" VerticalAlignment="Center" />
         <CheckBox x:Name="GroundCheck" Content="地面纹理" IsChecked="True" VerticalAlignment="Center" />
@@ -48,7 +89,19 @@
     </Border>
 
     <Grid x:Name="ContentGrid" ColumnDefinitions="3*,4,2*">
-      <controls:PointCloudView x:Name="View" Grid.Column="0" />
+      <Grid Grid.Column="0">
+        <controls:PointCloudView x:Name="View" />
+        <!-- 框选矩形与笔迹画在上面一层：GL 视图里画 2D 图形要另写一套着色器，Avalonia 的形状更省事 -->
+        <Canvas x:Name="SelectionCanvas" IsHitTestVisible="False">
+          <Rectangle x:Name="SelectionRect" IsVisible="False"
+                     Stroke="#FFB020" StrokeThickness="1.5" Fill="#40FFB020" />
+          <!-- 笔迹用粗折线画：圆头 + 圆角，几何上正好是 Core 里判定的「折线胶囊」 -->
+          <Polyline x:Name="BrushStroke" IsVisible="False" Stroke="#FF6B4A" StrokeThickness="64"
+                    StrokeLineCap="Round" StrokeJoin="Round" Opacity="0.45" />
+          <Ellipse x:Name="BrushCursor" IsVisible="False" Stroke="#FF6B4A" StrokeThickness="1.5"
+                   Fill="#18FF6B4A" />
+        </Canvas>
+      </Grid>
 
       <GridSplitter x:Name="MapSplitter" Grid.Column="1" ResizeDirection="Columns" Background="#262B33" />
 

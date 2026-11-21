@@ -119,6 +119,27 @@ public sealed unsafe class XyzCloud : IDisposable
         return points;
     }
 
+    /// <summary>
+    /// 用托管字节构造点云（算子输出、合成数据用）。
+    /// </summary>
+    /// <param name="data">紧密排列的 float32 x3，长度必须覆盖 <paramref name="pointCount"/> 个点。</param>
+    /// <param name="pointCount">点数。</param>
+    /// <param name="sourcePath">来源路径（只用于日志/标题，可为空）。</param>
+    public static XyzCloud Create(byte[] data, int pointCount, string sourcePath = "")
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        ArgumentOutOfRangeException.ThrowIfNegative(pointCount);
+
+        long required = (long)pointCount * Stride;
+        if (data.Length < required)
+        {
+            throw new ArgumentException($"字节数 {data.Length} 不足以容纳 {pointCount} 个点（需要 {required}）。", nameof(data));
+        }
+
+        Bounds3 bounds = ScanBounds(data.AsSpan(0, (int)required), pointCount, sampleLimit: int.MaxValue);
+        return new XyzCloud(sourcePath, pointCount, bounds, data);
+    }
+
     /// <summary>打开 PCD 并转成 XYZ 字节视图（必要时零拷贝）。</summary>
     public static XyzCloud Open(string path)
     {

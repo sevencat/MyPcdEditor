@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
@@ -43,6 +44,22 @@ public sealed class PointCloudView : GlControlBase
     private bool _uploading;
     private bool _capturePending;
     private Vector3[]? _fitSamples;
+
+    // 框选：按下点 → 拖动中的框 → 松开时交给 MainWindow 删点
+    private (double X, double Y)? _selectionStart;
+    private ScreenBox? _selection;
+    private bool _selectionKeepInside;
+
+    /// <summary>框小于这个像素尺寸当误点，不执行删除。</summary>
+    private const double SelectionMinPixels = 4;
+
+    // 笔刷：按住左键涂出一条折线，松手时整条折线交给 MainWindow 删点
+    private readonly List<Vector2> _brushPath = [];
+    private bool _brushing;
+    private (double X, double Y)? _brushLast;
+
+    /// <summary>笔迹最多这么多个顶点：绕圈涂太久时截断，否则松手后逐段判定会变慢。</summary>
+    private const int BrushMaxVertices = 256;
 
     // 分块包围盒在后台线程扫（与 GL 上传并行）：_readyChunks 是算好待渲染线程取走的结果
     private CancellationTokenSource? _chunkBuildCts;
@@ -96,6 +113,31 @@ public sealed class PointCloudView : GlControlBase
     public bool CullingEnabled { get; set; } =
         Environment.GetEnvironmentVariable("PGV_NO_CULL") != "1";
 
+    /// <summary>当前点云（只读借用：所有权仍在视图，换云后立即失效，不要缓存）。</summary>
+    public XyzCloud? Cloud => _activeCloud;
+
+    /// <summary>已提交、还没跑完上传的那份点云（换云后到渲染帧之间有效）。</summary>
+    /// <remarks>
+    /// 给「刚换完云就要读数据」的路径用（导出、无窗口测试）：这时 <see cref="Cloud"/> 还是旧的或空的。
+    /// </remarks>
+    internal XyzCloud? PendingCloud
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _pendingCloud;
+            }
+        }
+    }
+
+    /// <summary>最新的点云：优先还没上传的那份，没有再退回正在显示的。</summary>
+    /// <remarks>
+    /// 顺序不能反：换云之后、渲染帧之前，<see cref="Cloud"/> 还是**旧的那份**，
+    /// 优先读它会让导出/优化拿到上一次的数据。
+    /// </remarks>
+    internal XyzCloud? CurrentCloud => PendingCloud ?? Cloud;
+
     /// <summary>已上传的点数（0 = 还没有点云）。</summary>
     public int PointCount => _renderer?.PointCount ?? 0;
 
@@ -117,6 +159,109 @@ public sealed class PointCloudView : GlControlBase
 
     /// <summary>点云首帧渲染完成后触发（已在 UI 线程）。</summary>
     public event Action<XyzCloud>? CloudReady;
+
+    /// <summary>框选模式：左键拖动画矩形（Shift + 拖 = 只保留框内），不再旋转视角。</summary>
+    public bool BoxSelectMode { get; private set; }
+
+    /// <summary>当前的框（拖动中持续更新），<c>null</c> = 没有框。</summary>
+    public ScreenBox? Selection => _selection;
+
+    /// <summary>框变化（拖动中 / 松开 / 清除）；UI 据此画矩形。</summary>
+    public event Action<ScreenBox?>? SelectionChanged;
+
+    /// <summary>框选完成：框 + 「只保留框内」标志（按住 Shift）。</summary>
+    public event Action<ScreenBox, bool>? BoxSelected;
+
+    /// <summary>框选模式被切换（工具栏按钮或 B 键）。</summary>
+    public event Action<bool>? BoxSelectModeChanged;
+
+    internal void SetBoxSelectMode(bool enabled)
+    {
+        if (BoxSelectMode == enabled)
+        {
+            return;
+        }
+
+        if (enabled)
+        {
+            // 两种编辑模式互斥：同时开着的话左键到底算画框还是画笔刷就说不清了
+            SetBrushMode(false);
+        }
+
+        BoxSelectMode = enabled;
+        if (!enabled)
+        {
+            ClearSelection();
+        }
+
+        BoxSelectModeChanged?.Invoke(enabled);
+    }
+
+    internal void ClearSelection()
+    {
+        _selectionStart = null;
+        if (_selection is null)
+        {
+            return;
+        }
+
+        _selection = null;
+        SelectionChanged?.Invoke(null);
+    }
+
+    /// <summary>笔刷模式：按住左键涂抹（拖动不转视角），松手删除涂到的点。</summary>
+    public bool BrushMode { get; private set; }
+
+    /// <summary>笔刷半径（像素）。</summary>
+    public double BrushRadiusPixels { get; set; } = 32;
+
+    /// <summary>笔迹变化（拖动中持续更新）：归一化顶点 + 归一化半径；UI 据此画粗折线。</summary>
+    public event Action<IReadOnlyList<Vector2>, double>? BrushStrokeChanged;
+
+    /// <summary>笔刷光标位置（画圆环），<c>null</c> = 隐藏。</summary>
+    public event Action<Vector2?>? BrushPointerChanged;
+
+    /// <summary>笔刷抬起：折线顶点 + 归一化半径，交给 MainWindow 删点。</summary>
+    public event Action<Vector2[], double>? BrushCompleted;
+
+    /// <summary>笔刷模式被切换（工具栏按钮或 E 键）。</summary>
+    public event Action<bool>? BrushModeChanged;
+
+    internal void SetBrushMode(bool enabled)
+    {
+        if (BrushMode == enabled)
+        {
+            return;
+        }
+
+        if (enabled)
+        {
+            SetBoxSelectMode(false);
+        }
+
+        BrushMode = enabled;
+        if (!enabled)
+        {
+            ClearBrush();
+            BrushPointerChanged?.Invoke(null);
+        }
+
+        BrushModeChanged?.Invoke(enabled);
+    }
+
+    internal void ClearBrush()
+    {
+        _brushing = false;
+        _brushLast = null;
+        if (_brushPath.Count > 0)
+        {
+            _brushPath.Clear();
+            BrushStrokeChanged?.Invoke(_brushPath, CurrentBrushRadius);
+        }
+    }
+
+    /// <summary>笔刷半径的归一化值（相对视口宽度）：Core 只认 0..1 坐标，不认识像素。</summary>
+    private float CurrentBrushRadius => (float)(BrushRadiusPixels / Math.Max(Bounds.Width, 1));
 
     /// <summary>像素读回结果（在 UI 线程触发）。</summary>
     public event Action<FramePixelStats>? PixelCaptured;
@@ -147,8 +292,12 @@ public sealed class PointCloudView : GlControlBase
     {
         ArgumentNullException.ThrowIfNull(cloud);
 
+        XyzCloud? dropped;
         lock (_sync)
         {
+            // 换云时把还没上传的那份放掉：连着换两次（打开 → 合并）而中间没渲染帧时，
+            // 被覆盖的旧云没人释放；零拷贝的话它还会一直占着 pcd 文件，替换原包就改不了名
+            dropped = ReferenceEquals(_pendingCloud, cloud) ? null : _pendingCloud;
             _pendingCloud = cloud;
             _fitSamples = null;
             _uploadOffset = 0;
@@ -156,6 +305,12 @@ public sealed class PointCloudView : GlControlBase
             UploadProgress = 0;
         }
 
+        // 拿到的引用已经不在字段里了，渲染线程要么取走的是新云，要么取走的是 null，不会撞上
+        dropped?.Dispose();
+
+        // 旧框/旧笔迹对应的是旧数据，换云后画面上已经没有可删的东西了
+        ClearSelection();
+        ClearBrush();
         RequestNextFrameRendering();
     }
 
@@ -175,7 +330,7 @@ public sealed class PointCloudView : GlControlBase
     }
 
     /// <summary>当前视口宽高比（像素），还没渲染过时给个常见的宽屏比例。</summary>
-    private float CurrentAspect => PixelHeight > 0 ? PixelWidth / (float)PixelHeight : 1.6f;
+    internal float CurrentAspect => PixelHeight > 0 ? PixelWidth / (float)PixelHeight : 1.6f;
 
     public void FitToCloud()
     {
@@ -593,8 +748,86 @@ public sealed class PointCloudView : GlControlBase
         }
     }
 
+    protected override void OnPointerPressed(PointerPressedEventArgs e)
+    {
+        // 松开时 e 里拿不到按下那一刻的修饰键，所以先记下来
+        _selectionKeepInside = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+        base.OnPointerPressed(e);
+    }
+
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        base.OnPointerCaptureLost(e);
+        if (_selectionStart is not null)
+        {
+            ClearSelection();
+        }
+
+        if (_brushing)
+        {
+            // 捕获丢了多半是窗口失焦：这一笔作废，不能拿半截笔迹去删点
+            ClearBrush();
+        }
+    }
+
+    protected override void OnPointerMoved(double normalizedX, double normalizedY)
+    {
+        if (BrushMode)
+        {
+            BrushPointerChanged?.Invoke(new Vector2((float)normalizedX, (float)normalizedY));
+        }
+    }
+
+    protected override void OnPointerExited(PointerEventArgs e)
+    {
+        base.OnPointerExited(e);
+        if (BrushMode)
+        {
+            BrushPointerChanged?.Invoke(null);
+        }
+    }
+
+    protected override void OnPointerPressed(double normalizedX, double normalizedY, MouseButton button)
+    {
+        if (button != MouseButton.Left)
+        {
+            return;
+        }
+
+        if (BoxSelectMode)
+        {
+            _selectionStart = (normalizedX, normalizedY);
+            _selection = ScreenBox.FromCorners(normalizedX, normalizedY, normalizedX, normalizedY);
+            SelectionChanged?.Invoke(_selection);
+            return;
+        }
+
+        if (BrushMode)
+        {
+            _brushing = true;
+            _brushPath.Clear();
+            _brushPath.Add(new Vector2((float)normalizedX, (float)normalizedY));
+            _brushLast = (normalizedX, normalizedY);
+            BrushStrokeChanged?.Invoke(_brushPath, CurrentBrushRadius);
+        }
+    }
+
     protected override void OnPointerDragged(double normalizedX, double normalizedY, double deltaX, double deltaY, MouseButton button)
     {
+        if (_brushing)
+        {
+            AppendBrushPoint(normalizedX, normalizedY);
+            return;
+        }
+
+        if (_selectionStart is { } start)
+        {
+            // 拖的是框，不是视角
+            _selection = ScreenBox.FromCorners(start.X, start.Y, normalizedX, normalizedY);
+            SelectionChanged?.Invoke(_selection);
+            return;
+        }
+
         double width = Math.Max(Bounds.Width, 1);
         double height = Math.Max(Bounds.Height, 1);
 
@@ -606,6 +839,74 @@ public sealed class PointCloudView : GlControlBase
         {
             _camera.Pan((float)deltaX, (float)deltaY, PixelHeight);
         }
+    }
+
+    protected override void OnPointerReleased(double normalizedX, double normalizedY, MouseButton button)
+    {
+        if (_brushing)
+        {
+            AppendBrushPoint(normalizedX, normalizedY);
+            _brushing = false;
+            _brushLast = null;
+
+            Vector2[] path = _brushPath.ToArray();
+            _brushPath.Clear();
+
+            // 先把手上的折线收起来，再去删点（删点是异步的，折线不该跟着停留）
+            BrushStrokeChanged?.Invoke(_brushPath, CurrentBrushRadius);
+            if (path.Length > 0)
+            {
+                BrushCompleted?.Invoke(path, CurrentBrushRadius);
+            }
+
+            return;
+        }
+
+        if (_selectionStart is not { } start)
+        {
+            return;
+        }
+
+        _selectionStart = null;
+        ScreenBox box = ScreenBox.FromCorners(start.X, start.Y, normalizedX, normalizedY);
+
+        // 几像素的抖动不算框：否则点一下就把脚下那一片删了
+        if (box.Width * Bounds.Width < SelectionMinPixels || box.Height * Bounds.Height < SelectionMinPixels)
+        {
+            ClearSelection();
+            return;
+        }
+
+        _selection = box;
+        SelectionChanged?.Invoke(box);
+        BoxSelected?.Invoke(box, _selectionKeepInside);
+    }
+
+    /// <summary>笔迹按「每半个笔刷」重采样：点太密松手后逐段判定慢，太稀折线的拐角会露。</summary>
+    private void AppendBrushPoint(double normalizedX, double normalizedY)
+    {
+        if (_brushPath.Count >= BrushMaxVertices)
+        {
+            return;
+        }
+
+        double width = Math.Max(Bounds.Width, 1);
+        double height = Math.Max(Bounds.Height, 1);
+
+        if (_brushLast is { } last)
+        {
+            double step = Math.Max(CurrentBrushRadius * 0.5 * width, 1);
+            double dx = (normalizedX - last.X) * width;
+            double dy = (normalizedY - last.Y) * height;
+            if ((dx * dx) + (dy * dy) < step * step)
+            {
+                return;
+            }
+        }
+
+        _brushPath.Add(new Vector2((float)normalizedX, (float)normalizedY));
+        _brushLast = (normalizedX, normalizedY);
+        BrushStrokeChanged?.Invoke(_brushPath, CurrentBrushRadius);
     }
 
     protected override void OnScroll(double normalizedX, double normalizedY, double delta)
@@ -625,6 +926,12 @@ public sealed class PointCloudView : GlControlBase
                 break;
             case Key.R:
                 ResetCamera();
+                break;
+            case Key.B:
+                SetBoxSelectMode(!BoxSelectMode);
+                break;
+            case Key.E:
+                SetBrushMode(!BrushMode);
                 break;
         }
     }

@@ -1,7 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
     <RootNamespace>MyPcdEditor.Core</RootNamespace>
     <AssemblyName>MyPcdEditor.Core</AssemblyName>
     <!-- 纯数据/IO 层：不得引用 Avalonia 或 Silk.NET -->
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 算子内部的哈希/网格是纯算法，测它们的分布比隔着公开 API 间接测更直接 -->
+    <InternalsVisibleTo Include="MyPcdEditor.Core.Tests" />
+  </ItemGroup>
+
 </Project>

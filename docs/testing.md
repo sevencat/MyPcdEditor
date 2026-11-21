@@ -5,7 +5,7 @@ GL 渲染要靠「真窗口 + `glReadPixels` 自检」和 FPS 基线，不要指
 
 ## 一、能力矩阵（实测）
 
-`tests/MyPcdEditor.App.Tests` 里 11 个用例已经坐实了下表前四行。
+`tests/MyPcdEditor.App.Tests` 里 25 个用例已经坐实了下表前四行。
 
 | 能力 | Avalonia headless | 真窗口（本机 ANGLE） |
 |---|---|---|
@@ -52,8 +52,8 @@ AppBuilder.Configure<App>()
 
 | 层 | 测什么 | 工具 | 现状 |
 |---|---|---|---|
-| Core | PCD/PGM/yaml 解析、LZF、包围盒、零拷贝路径、视口变换、occupancy 语义、地面纹理降采样/膨胀、视锥剔除/分块包围盒 | 普通 xunit（v2） | 34 个用例 ✅ |
-| App 逻辑 | 窗口装配、按钮/滑块/下拉绑定、指针桥接、相机响应、状态栏文案、抽样点数换算、抽样索引按块分区 | headless + xunit v3 | 15 个用例 ✅ |
+| Core | PCD/PGM/yaml 解析、LZF、包围盒、零拷贝路径、视口变换、occupancy 语义、地面纹理降采样/膨胀、视锥剔除/分块包围盒、优化算子（体素降采样/SOR/裁剪/形态学）、体素哈希分布、框选投影判定、合并（锚点初值/ICP/点云拼接/栅格合成）、写包（文件名/锚点/toml 沿用参考包）、替换（两阶段提交/备份/回滚） | 普通 xunit（v2） | 87 个用例 ✅ |
+| App 逻辑 | 窗口装配、按钮/滑块/下拉绑定、指针桥接、相机响应、状态栏文案、抽样点数换算、抽样索引按块分区、合并入口接线（合并→确认→导出，放弃→保持原样）、导出到当前包目录被拒绝、替换（写回/取消/跳过未变 pcd）、框选（画框不动相机/小框忽略/删点/全删光拒绝） | headless + xunit v3 | 25 个用例 ✅ |
 | 2D 地图视觉 | `MapView` 绘制、栅格配色、缩放采样 | headless + Skia 截图读像素 | 已实现 ✅（见 §5） |
 | 地面纹理 | `GroundTexture` 数据含墙、构建耗时上限、PNG 落盘核对 | headless（真实包，无数据跳过） | 已实现 ✅（见 §5） |
 | GL 渲染 | 着色器编译、点云画出来没有、颜色/裁剪是否正常 | 真窗口 `--selftest`：渲染后 `glReadPixels` 统计非背景像素比例 | 已实现 ✅ |
@@ -72,6 +72,66 @@ AppBuilder.Configure<App>()
 
 不做的事：不把 620 MB 样例数据塞进单测（有数据才跑、没数据 return，已经是现在的写法）；
 不在 CI 里跑 GL 用例（无 GPU 会误报）。
+
+### 优化算子的用例要点
+
+算子全是纯函数（输入云/图 → 输出新的云/图），所以能在普通 xunit 里直接断言数值：
+
+| 覆盖点 | 用例 |
+|---|---|
+| 体素合并：同格多点 → 1 个质心点 | `VoxelDownsample_MergesPointsInSameVoxel` |
+| 跨格不合并、非有限点丢弃、原点取包围盒最小角、空云、非法边长 | `VoxelDownsample_SplitsAcrossVoxelBoundary` / `_SkipsNonFinitePoints` / `_AssignsVoxelsRelativeToBounds` / `_EmptyCloudStaysEmpty` / `_RejectsInvalidVoxelSize` |
+| 裁剪内/外两侧、边界点归属 | `CropBox_KeepsOnlyInside` / `CropBox_CanInvertToExclude` / `CropBox_IncludesPointsOnBoundary` |
+| SOR 删孤点、无邻居必删、均匀云不误删、非有限点、非法参数 | `OutlierRemoval_DropsIsolatedPoint` / `_LoneFarPointIsDroppedWithNoNeighbors` / `_KeepsUniformCloudIntactWithLooseThreshold` / `_DropsNonFinitePointsRegardless` / `_RejectsBadParameters` |
+| 体素哈希值域（防 24 位退化重演） | `VoxelHash_SpreadsAcrossFullIntRange` |
+| 开运算去孤点/保实心块，以及**会抹掉 1 px 薄墙**这条已知局限 | `Open_RemovesSinglePixelSpur` / `Open_KeepsSolidBlock` / `Open_ErasesOnePixelWideLine_KnownLimitation` |
+| 去毛刺保薄墙/保对角、闭运算补洞且不侵入空白、去孤岛按面积与 8 连通 | `Despeckle_RemovesSpeckleButKeepsThinWall` / `Despeckle_KeepsDiagonalWall` / `Close_FillsSinglePixelHole` / `Close_DoesNotGrowIntoSolidFreeArea` / `RemoveIslands_*` |
+| PGM 写出后读回一致 | `PgmWriter_RoundTripsThroughReader` |
+
+时间不写进断言（机器差异大），性能只在 `docs/performance.md` 里手工记录。
+
+### 合并的用例要点
+
+合成场景用的是**随机撒点**的房间（地面 + 四墙 + 柱子），不能用规则栅格：
+规则栅格的对应点会周期性重合，ICP 会收敛到「错一排」，测出来的是夹具的周期性而不是算法。
+
+| 覆盖点 | 用例 |
+|---|---|
+| 锚点相减得初值（含 float32 精度容差，UTM 绝对坐标只有厘米级精度） | `Anchors_*`（同 zone / 异 zone / 缺锚点） |
+| 纯平移、已知 yaw+平移能精确恢复 | `Align_RecoversPureTranslation` / `Align_RecoversKnownYawAndTranslation` |
+| 无重叠时保留初值并给出说明（而不是乱配） | `Align_ReportsFailureWhenNoOverlap` |
+| 场景外多余点不把外推带偏，且内点率如实降低 | `Align_IgnoresPointsOutsideOverlap` |
+| 栅格：范围并集 / 冲突优先级 / 重叠计数 / 旋转后 bbox | `GridMerge_*` |
+| 点云：拼接点数、每份各自的变换、去重 | `CloudMerge_*` |
+| 端到端（真实文件往返：打开两包 → 对齐 → 拼云 + 拼图 → 读回） | `MapMerger_EndToEndAlignsTwoPackages` |
+
+「硬截断会裁掉唯一有效约束」这个坑（ADR-016）就是被 `Align_RecoversPureTranslation` 抓到的：
+它当时停在 0.155/0.6 m 且 `Converged=true`。**收敛标志只能说明「不再动了」，不能说明「对上了」**——
+所以对齐质量的断言要落在**解本身**和**内点率**上，不能只看 `Converged`。
+
+App 侧 `MergeFlowTests` 用「锚点差精确等于场景平移」的合成包（初值即真值，ICP 不动），只验接线：
+采用路径断言合并后 2000 点、合并栅格 200×100 px（证明用的是合并后的 meta 而不是包里的 yaml）、
+导出文件名沿用参考包（`map.pcd`）且带 `.projected_origin`；放弃路径断言视图与导出仍是原始包那一份；
+另有「导出到当前包目录被拒绝」一条守住原始数据。
+无窗口下 `PointCloudView.Cloud` 永远不就绪（没有渲染帧），所以导出/算子统一取 `View.CurrentCloud`
+（`PendingCloud ?? Cloud`：换云之后、渲染帧之前 `Cloud` 还是旧的那份，顺序反了会导出上一次的数据）。
+替换另有三条：合并后替换写回原目录（`.bak` 里是旧的 1000 点）、确认框取消则一个字节不动、
+打开后没动过点云则跳过 pcd（零拷贝的云映射着文件，硬写必然失败）。
+
+写包器（`MapPackageWriterTests`）的关键断言是**读回**而不是「文件存在」：
+`MapPackage.Open` 重新打开导出目录，点云点数、yaml 分辨率、锚点 X/zone、toml 的 `[[grids]]` 都要对得上。
+只断言「文件写出来了」会漏掉最要命的一种失败——文件写了但锚点没带，导出件再也不能参与合并。
+另外两条边界：`overwrite:false` 时旧文件必须原样（写 `.tmp` 再改名的意义），以及无可写数据时不建空目录。
+
+替换的用例同理，断言的是「`.bak` 里是替换前的内容」——只断言「目标变了」会漏掉备份写错
+（备份成新内容等于没备份）。回滚用例（`Replace_RollsBackWhenTargetIsLocked`）故意锁住 yaml：
+此时 pcd、pgm 已经改名让位，必须一起还原，否则包就是「一半新一半旧」。这条用真文件锁模拟、
+不 mock 文件系统，才能测到 `File.Move` 在文件被占用时真的会失败。
+
+框选的用例避开相机状态：投影矩阵取 `Matrix4x4.Identity`，世界坐标直接就是 NDC（x&lt;0 落屏幕左半），
+于是「框右半」有确定答案，不用去核对相机四元数。`M44 = -1` 造出 w&lt;0（相机后方）：
+屏幕位置算不出来，必须当「不在框内」。App 侧用 headless 鼠标真画一次框，断言「相机 yaw 没变、
+事件带出的矩形非空」——框选模式最容易犯的错是拖框的同时把视角转了，松手时框和画面已经错位。
 
 ## 四、渲染自检 `--selftest`（GL 的自动化回归）
 

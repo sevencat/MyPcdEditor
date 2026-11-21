@@ -33,4 +33,9 @@
     <ProjectReference Include="..\MyPcdEditor.Core\MyPcdEditor.Core.csproj" />
     <ProjectReference Include="..\MyPcdEditor.Rendering.Gles3\MyPcdEditor.Rendering.Gles3.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- 无窗口测试要直接驱动 MainWindow 的 internal 入口（加载/合并/导出），不必去点系统文件对话框 -->
+    <InternalsVisibleTo Include="MyPcdEditor.App.Tests" />
+  </ItemGroup>
 </Project>

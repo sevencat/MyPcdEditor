@@ -22,8 +22,20 @@ MyPcdEditor.App (Avalonia 12, win-x64)
             ├── Pcd/{PcdHeader,PcdReader,PcdWriter}
             ├── Grid/{PgmReader,PgmWriter,MapYaml,OccupancyMap}
             ├── Grid/{OccupancyPalette,GroundTexture} : 语义配色 / 降采样成 GL 纹理数据
+            ├── Grid/GridMorphology   : 去毛刺 / 补洞 / 去孤岛（输出新 PgmImage，抹除填未知）
             ├── Geometry/Frustum      : 从 view-projection 提 6 平面 + P 顶点 AABB 测试
             ├── PointCloud/ChunkedBounds : 按连续点区间累加块包围盒（可后台线程整云扫描）
+            ├── PointCloud/PointCloudOps : 体素降采样 / SOR 去噪 / Box 裁剪 / 屏幕框选（纯函数，可取消）
+            ├── PointCloud/VoxelHash  : 体素键打包 + 链式哈希表 + 质心累加
+            ├── PointCloud/VoxelGridIndex : SOR 的 3×3×3→5×5×5 近邻网格（只读，可并行查询；ICP 也用它找对应点）
+            ├── Merge/AlignmentTransform : 4 自由度刚体（yaw + xyz），Then/Inverse/Difference
+            ├── Merge/CloudAligner       : 锚点定初值 + 粗精两级 Huber 加权 ICP（4 自由度闭式 Procrustes）
+            ├── Merge/PointCloudMerger   : 多份点按各自变换拼成一份，可选体素去重
+            ├── Merge/GridMerger         : 多图按 origin + 变换放置，并集范围 + 冲突优先级（占用>未知>空闲）
+            ├── Merge/MapMerger          : 编排层，产出 MergeOutcome + 中文对齐报告
+            ├── MapPackageWriter     : 写完整包目录（文件名 / 锚点 / toml 沿用参考包）
+            │                          两阶段提交：Prepare 只写 .tmp，Commit 才让原文件改名为 .bak
+            │                          再就位（替换失败整包回滚）；Write 用于导出，Replace 用于覆盖原包
             └── MapPackage           : 目录级聚合（含 projected_origin / id_map）
 ```
 
@@ -62,6 +74,18 @@ _gl = new Silk.NET.OpenGLES.GL(new LamdaNativeContext(glInterface.GetProcAddress
 - **分块包围盒**：`ChunkBoundsBuilder.Build` 也在后台线程整云扫描（32 M 点 Debug 下 1.4~1.9 s），与上传并行；结果放 `_readyChunks`，渲染回调里的 `ApplyReadyChunks` 取走并 `SetChunks`。算完之前不分块（整块画）。
 - **后台扫描的生命周期**：它读的是点云的映射内存，换图/`OnGlReleased` 前必须 `CancelChunkBuild()`——取消**并且等待**任务退出（切片内部不检查取消，64 MB 一片要几百毫秒），否则会和 `XyzCloud.Dispose` 抢指针。
 - **UI 状态**：`FrameStatsUpdated` 事件来自渲染线程，必须 `Dispatcher.UIThread.Post` 回 UI 线程再更新状态栏。
+- **优化算子**：`Task.Run` 里跑，`IProgress<double>` 回报进度（UI 线程回调自动排队），`CancellationToken` 只在每 65536 点检查一次。
+  SOR 的查询阶段对网格只读、每点写自己的下标，点数 ≥ 20 万时走 `Parallel.For`（5.4 M 点 k=8：串行 71.6 s → 并行 7.5 s）。
+  算子输出是**新建的托管数组**（`XyzCloud.Create`），不持有 MMF，所以能直接替换视图里的云、也能导出；换云后旧的 `XyzCloud` 由控件释放。
+- **合并**：整条链路（读包 → 采样 → ICP → 拼接 → 栅格合成）都在一个 `Task.Run` 里，进度按阶段分摊
+  （开包/采样 0~5%、粗配准 5~30%、精配准 30~55%、点云拼接 55~70%、栅格 70~100%）；
+  ICP 每次迭代检查取消，点云拼接每 65536 点检查。合并会**再开一次两包的 MMF**（与视图里那份并存，
+  48 M 点的样例峰值约 2.5 GB），输出是新建托管数组，交接给视图后由控件释放。
+- **刚换完云的空窗**：`PointCloudView.Cloud` 要等上传完（渲染帧）才就绪，之前新数据在 `_pendingCloud` 里。
+  导出、算子、替换统一用 `View.CurrentCloud`（`PendingCloud ?? Cloud`）——**顺序不能反**：
+  换云之后、渲染帧之前 `Cloud` 还是旧的那份，优先读它会导出上一次的数据（曾经的真 bug）。
+  `SetCloud` 现在会释放被覆盖的旧 pending：否则连着换两次云而中间没渲染帧，零拷贝的旧云一直占着 pcd，
+  替换时改名直接失败。
 
 ## 5. 内存/显存预算（样例数据实测）
 
