@@ -23,9 +23,10 @@ MyPcdEditor.App (Avalonia 12, win-x64)
             ├── Grid/{PgmReader,PgmWriter,MapYaml,OccupancyMap}
             ├── Grid/{OccupancyPalette,GroundTexture} : 语义配色 / 降采样成 GL 纹理数据
             ├── Grid/GridMorphology   : 去毛刺 / 补洞 / 去孤岛（输出新 PgmImage，抹除填未知）
+            ├── Grid/GridEraser       : 栅格橡皮擦（折线胶囊刷成未知 / 空闲，输出新 PgmImage）
             ├── Geometry/Frustum      : 从 view-projection 提 6 平面 + P 顶点 AABB 测试
             ├── PointCloud/ChunkedBounds : 按连续点区间累加块包围盒（可后台线程整云扫描）
-            ├── PointCloud/PointCloudOps : 体素降采样 / SOR 去噪 / Box 裁剪 / 屏幕框选（纯函数，可取消）
+            ├── PointCloud/PointCloudOps : 体素降采样 / SOR 去噪 / Box 裁剪 / 屏幕框选 / 屏幕笔刷（纯函数，可取消）
             ├── PointCloud/VoxelHash  : 体素键打包 + 链式哈希表 + 质心累加
             ├── PointCloud/VoxelGridIndex : SOR 的 3×3×3→5×5×5 近邻网格（只读，可并行查询；ICP 也用它找对应点）
             ├── Merge/AlignmentTransform : 4 自由度刚体（yaw + xyz），Then/Inverse/Difference
@@ -86,6 +87,10 @@ _gl = new Silk.NET.OpenGLES.GL(new LamdaNativeContext(glInterface.GetProcAddress
   换云之后、渲染帧之前 `Cloud` 还是旧的那份，优先读它会导出上一次的数据（曾经的真 bug）。
   `SetCloud` 现在会释放被覆盖的旧 pending：否则连着换两次云而中间没渲染帧，零拷贝的旧云一直占着 pcd，
   替换时改名直接失败。
+- **撤销栈**（`MainWindow._undo`）：编辑类算子动手前把「改动前的点云 + 栅格 + 状态栏文案」压栈。
+  点云不可变，压栈只是拿引用；但视图会在换云时释放旧云，所以编辑前先 `View.DetachCloud()`
+  把所有权取进撤销栈，撤销时再 `SetCloud` 交回去。栈深 8 步、内存预算 2 GB（只算非零拷贝点云 + 栅格像素），
+  换包/合并清空。撤销栅格后的地面纹理重建与擦除共用同一个版本号，连撤几次也只让最后一次上屏。
 
 ## 5. 内存/显存预算（样例数据实测）
 

@@ -46,6 +46,19 @@ public sealed class MapView : Control
     private bool _needFit;
     private bool _showOverlay = true;
 
+    // 位图只在栅格/叠加层/视口变了才重填；涂抹时只画预览，不重刷整张视口
+    private bool _frameDirty = true;
+
+    // 擦除笔迹：栅格像素坐标交给 Core，屏幕坐标只用来画预览
+    private readonly List<Vector2> _erasePath = [];
+    private readonly List<Point> _eraseScreenPath = [];
+    private bool _erasing;
+    private double _eraseRadius = 1;
+    private Point? _hoverPointer;
+
+    /// <summary>笔迹最多这么多个顶点：绕圈涂太久时截断，免得每次重画都遍历一长串。</summary>
+    private const int EraseMaxVertices = 256;
+
     public MapView() => Focusable = true;
 
     /// <summary>是否叠加点云的 XY 投影。</summary>
@@ -60,8 +73,35 @@ public sealed class MapView : Control
             }
 
             _showOverlay = value;
-            InvalidateVisual();
+            Refresh();
         }
+    }
+
+    /// <summary>擦除模式：左键涂抹（右键平移、滚轮缩放照旧），松手把笔迹交给 MainWindow 改栅格。</summary>
+    public bool EraseMode { get; private set; }
+
+    /// <summary>笔刷半径（DIP，与 3D 笔刷共用工具栏滑块）。</summary>
+    public double BrushRadiusPixels { get; set; } = 24;
+
+    /// <summary>擦除模式被切换（工具栏按钮或 G 键）。</summary>
+    public event Action<bool>? EraseModeChanged;
+
+    /// <summary>一条笔迹落下：栅格像素坐标折线 + 笔刷半径（栅格像素）。</summary>
+    public event Action<Vector2[], double>? EraseCompleted;
+
+    internal void SetEraseMode(bool enabled)
+    {
+        if (EraseMode == enabled)
+        {
+            return;
+        }
+
+        EraseMode = enabled;
+        _erasing = false;
+        _erasePath.Clear();
+        _eraseScreenPath.Clear();
+        InvalidateVisual();
+        EraseModeChanged?.Invoke(enabled);
     }
 
     public bool HasMap => _image is not null && _meta is not null;
@@ -72,11 +112,16 @@ public sealed class MapView : Control
     /// <summary>当前缩放（每米像素数），供状态栏显示。</summary>
     public double PixelsPerMeter => _transform.PixelsPerMeter;
 
+    /// <summary>当前视图变换（测试用来断言「涂抹/擦除没把地图拖走」）。</summary>
+    internal MapViewTransform Transform => _transform;
+
     /// <summary>光标移动读数（UI 线程）。</summary>
     public event Action<MapCursorInfo>? CursorMoved;
 
     /// <summary>换栅格图；<paramref name="meta"/> 决定配色与像素→世界换算。</summary>
-    public void SetMap(PgmImage image, MapYaml meta)
+    /// <param name="fit">是否重新适配视图。<c>false</c> 用于原地编辑（笔刷擦除），
+    /// 否则每涂一笔画面就跳回全图，根本没法连续作业。</param>
+    public void SetMap(PgmImage image, MapYaml meta, bool fit = true)
     {
         ArgumentNullException.ThrowIfNull(image);
         ArgumentNullException.ThrowIfNull(meta);
@@ -84,8 +129,12 @@ public sealed class MapView : Control
         _image = image;
         _meta = meta;
         _classes = BuildClassLut(meta);
-        _needFit = true;
-        InvalidateVisual();
+        if (fit)
+        {
+            _needFit = true;
+        }
+
+        Refresh();
     }
 
     public void ClearMap()
@@ -93,14 +142,17 @@ public sealed class MapView : Control
         _image = null;
         _meta = null;
         _overlay = [];
-        InvalidateVisual();
+        _erasing = false;
+        _erasePath.Clear();
+        _eraseScreenPath.Clear();
+        Refresh();
     }
 
     /// <summary>点云叠加层（世界坐标 XY，世界 Z 忽略）。</summary>
     public void SetOverlay(Vector3[]? points)
     {
         _overlay = points ?? [];
-        InvalidateVisual();
+        Refresh();
     }
 
     /// <summary>按栅格覆盖范围整体适配；无图时什么都不做。</summary>
@@ -111,6 +163,13 @@ public sealed class MapView : Control
             return;
         }
 
+        Refresh();
+    }
+
+    /// <summary>栅格内容或视口变了：下一帧要重填位图。</summary>
+    private void Refresh()
+    {
+        _frameDirty = true;
         InvalidateVisual();
     }
 
@@ -146,9 +205,13 @@ public sealed class MapView : Control
         {
             // 渲染过程中不能 InvalidateVisual，直接算
             _ = TryFitCore();
+            _frameDirty = true;
         }
 
-        EnsureBitmap(pixelWidth, pixelHeight);
+        if (EnsureBitmap(pixelWidth, pixelHeight))
+        {
+            _frameDirty = true;
+        }
 
         if (_image is null || _meta is null)
         {
@@ -156,12 +219,52 @@ public sealed class MapView : Control
             return;
         }
 
-        FillFrame(pixelWidth, pixelHeight);
-        Upload();
+        if (_frameDirty)
+        {
+            FillFrame(pixelWidth, pixelHeight);
+            Upload();
+            _frameDirty = false;
+        }
 
         context.DrawImage(
             _bitmap!,
             new Rect(0, 0, pixelWidth / scaling, pixelHeight / scaling));
+
+        DrawEraseOverlay(context);
+    }
+
+    /// <summary>笔迹预览 + 笔刷圆环（DIP 坐标，画在位图之上，不碰位图内容）。</summary>
+    private void DrawEraseOverlay(DrawingContext context)
+    {
+        if (!EraseMode)
+        {
+            return;
+        }
+
+        double radius = BrushRadiusPixels;
+        var strokeColor = Color.FromArgb(170, 255, 107, 74);
+        var pen = new Pen(
+            new SolidColorBrush(strokeColor),
+            Math.Max(radius * 2, 2),
+            lineCap: PenLineCap.Round,
+            lineJoin: PenLineJoin.Round);
+
+        if (_eraseScreenPath.Count == 1)
+        {
+            // 还没形成线段：画一个圆点，和 Core 里「单点笔迹 = 圆」对应
+            context.DrawEllipse(new SolidColorBrush(Color.FromArgb(90, 255, 107, 74)), null,
+                _eraseScreenPath[0], radius, radius);
+        }
+
+        for (var i = 1; i < _eraseScreenPath.Count; i++)
+        {
+            context.DrawLine(pen, _eraseScreenPath[i - 1], _eraseScreenPath[i]);
+        }
+
+        if (_hoverPointer is { } hover)
+        {
+            context.DrawEllipse(null, new Pen(Brushes.White, 1), hover, radius, radius);
+        }
     }
 
     /// <summary>
@@ -340,12 +443,13 @@ public sealed class MapView : Control
         return classes;
     }
 
-    private void EnsureBitmap(int pixelWidth, int pixelHeight)
+    /// <summary>按视口尺寸准备位图；重新分配过（尺寸变了）返回 <c>true</c>，调用方要重填。</summary>
+    private bool EnsureBitmap(int pixelWidth, int pixelHeight)
     {
         if (_bitmap is { } existing && existing.PixelSize.Width == pixelWidth &&
             existing.PixelSize.Height == pixelHeight)
         {
-            return;
+            return false;
         }
 
         _bitmap?.Dispose();
@@ -355,6 +459,7 @@ public sealed class MapView : Control
             PixelFormat.Bgra8888,
             AlphaFormat.Opaque);
         _frame = new byte[pixelWidth * pixelHeight * 4];
+        return true;
     }
 
     private void Upload()
@@ -387,15 +492,34 @@ public sealed class MapView : Control
     {
         base.OnPointerPressed(e);
 
-        if (!IsPointerOver || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        if (!IsPointerOver)
         {
             return;
         }
 
-        _lastPointer = e.GetPosition(this);
-        e.Pointer.Capture(this);
-        Focus(); // 让 F（适配）/ R（复位）快捷键可用
-        e.Handled = true;
+        PointerPointProperties properties = e.GetCurrentPoint(this).Properties;
+        Point position = e.GetPosition(this);
+
+        Focus(); // 让 F（适配）/ G（擦除）快捷键可用
+
+        if (EraseMode && properties.IsLeftButtonPressed && HasMap)
+        {
+            _erasing = true;
+            _erasePath.Clear();
+            _eraseScreenPath.Clear();
+            AddErasePoint(position);
+            e.Pointer.Capture(this);
+            e.Handled = true;
+            return;
+        }
+
+        // 擦除模式下左键被笔刷占了，右键也能平移
+        if (properties.IsLeftButtonPressed || properties.IsRightButtonPressed)
+        {
+            _lastPointer = position;
+            e.Pointer.Capture(this);
+            e.Handled = true;
+        }
     }
 
     protected override void OnPointerMoved(PointerEventArgs e)
@@ -404,12 +528,24 @@ public sealed class MapView : Control
 
         Point position = e.GetPosition(this);
         double scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
+        _hoverPointer = position;
+
+        if (EraseMode)
+        {
+            if (_erasing)
+            {
+                AddErasePoint(position);
+            }
+
+            // 只重画笔迹与圆环：位图没脏，不会重填整张视口
+            InvalidateVisual();
+        }
 
         if (_lastPointer is { } last && _image is not null)
         {
             _transform.Pan((position.X - last.X) * scaling, (position.Y - last.Y) * scaling);
             _lastPointer = position;
-            InvalidateVisual();
+            Refresh();
         }
 
         RaiseCursor(position, scaling);
@@ -419,8 +555,36 @@ public sealed class MapView : Control
     {
         base.OnPointerReleased(e);
 
+        if (_erasing)
+        {
+            FinishErase();
+        }
+
         _lastPointer = null;
         e.Pointer.Capture(null);
+    }
+
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        base.OnPointerCaptureLost(e);
+
+        // 捕获丢了（多半是窗口失焦）：这一笔作废，不能拿半截笔迹去改栅格
+        _erasing = false;
+        _erasePath.Clear();
+        _eraseScreenPath.Clear();
+        _lastPointer = null;
+        InvalidateVisual();
+    }
+
+    protected override void OnPointerExited(PointerEventArgs e)
+    {
+        base.OnPointerExited(e);
+
+        _hoverPointer = null;
+        if (EraseMode)
+        {
+            InvalidateVisual();
+        }
     }
 
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
@@ -437,7 +601,7 @@ public sealed class MapView : Control
         double factor = Math.Pow(1.25, e.Delta.Y);
 
         _transform.ZoomAt(position.X * scaling, position.Y * scaling, factor);
-        InvalidateVisual();
+        Refresh();
         RaiseCursor(position, scaling);
         e.Handled = true;
     }
@@ -449,16 +613,77 @@ public sealed class MapView : Control
         switch (e.Key)
         {
             case Key.F:
-                FitToMap();
-                break;
             case Key.R:
                 FitToMap();
+                break;
+            case Key.G:
+                SetEraseMode(!EraseMode);
                 break;
             default:
                 return;
         }
 
         e.Handled = true;
+    }
+
+    /// <summary>屏幕点 → 栅格像素坐标 + 笔刷半径（都换算成栅格像素）。</summary>
+    private bool TryGridPoint(Point position, out Vector2 grid, out double radius)
+    {
+        grid = default;
+        radius = 0;
+
+        if (_image is null || _meta is null)
+        {
+            return false;
+        }
+
+        double scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
+        (double worldX, double worldY) = _transform.ScreenToWorld(position.X * scaling, position.Y * scaling);
+
+        grid = new Vector2(
+            (float)((worldX - _meta.OriginX) / _meta.Resolution),
+            (float)(_image.Height - ((worldY - _meta.OriginY) / _meta.Resolution)));
+
+        // DIP → 物理像素 → 米 → 栅格像素：放大看细节时笔刷跟着画面一起变大，所见即所擦
+        double radiusMeters = (BrushRadiusPixels * scaling) / Math.Max(_transform.PixelsPerMeter, 1e-9);
+        radius = Math.Max(radiusMeters / _meta.Resolution, 0.5);
+        return true;
+    }
+
+    /// <summary>按「半个笔刷」重采样：太密松手后判定慢，太稀折线的拐角会露。</summary>
+    private void AddErasePoint(Point position)
+    {
+        if (_erasePath.Count >= EraseMaxVertices || !TryGridPoint(position, out Vector2 grid, out double radius))
+        {
+            return;
+        }
+
+        _eraseRadius = radius;
+
+        if (_erasePath.Count > 0 && Vector2.Distance(_erasePath[^1], grid) < Math.Max(radius * 0.5, 1))
+        {
+            return;
+        }
+
+        _erasePath.Add(grid);
+        _eraseScreenPath.Add(position);
+        InvalidateVisual();
+    }
+
+    private void FinishErase()
+    {
+        _erasing = false;
+
+        Vector2[] path = _erasePath.ToArray();
+        double radius = _eraseRadius;
+        _erasePath.Clear();
+        _eraseScreenPath.Clear();
+        InvalidateVisual();
+
+        if (path.Length > 0)
+        {
+            EraseCompleted?.Invoke(path, radius);
+        }
     }
 
     /// <summary>把屏幕点换算成世界坐标与栅格值，抛给状态栏。</summary>

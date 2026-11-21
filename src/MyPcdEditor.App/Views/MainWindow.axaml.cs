@@ -1,8 +1,11 @@
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using MyPcdEditor.App.Controls;
@@ -44,11 +47,29 @@ public sealed partial class MainWindow : Window
     /// <summary>优化/导出进行中：禁止并发换图与再处理（算子读的是正在显示的那份数据）。</summary>
     private bool _busy;
 
+    /// <summary>笔刷光标最近的位置（归一化）：调半径时要按它重画圆环。</summary>
+    private Vector2? _brushCursor;
+
+    /// <summary>地面纹理重建的版本号：连涂几笔时只让最后发起的那次结果上屏。</summary>
+    private int _groundVersion;
+
+    /// <summary>撤销栈（最近 <see cref="UndoDepth"/> 步编辑）。</summary>
+    private readonly List<EditSnapshot> _undo = [];
+
+    /// <summary>撤销深度：再多也记不住，点云快照占的是真内存。</summary>
+    private const int UndoDepth = 8;
+
+    /// <summary>撤销栈的内存预算：过了就丢最旧的一步（48 M 点的副本一份就是 580 MB）。</summary>
+    private const long UndoBudgetBytes = 2L << 30;
+
     /// <summary>当前包是否带 PGM（自检据此判断地图视图该不该有内容）。</summary>
     internal bool HasGrid => _package?.PgmPath is not null;
 
     /// <summary>2D 地图视图（自检用）。</summary>
     internal MapView MapViewControl => Map;
+
+    /// <summary>当前栅格图（测试用来断言「撤销把像素换回去了」）。</summary>
+    internal PgmImage? CurrentGrid => _grid;
 
     /// <summary>合并报告的确认方式：默认弹窗，测试可替换成自动采用（无窗口环境弹不出对话框）。</summary>
     internal Func<string, Task<bool>> ConfirmMergeReport { get; set; } = _ => Task.FromResult(true);
@@ -148,6 +169,69 @@ public sealed partial class MainWindow : Window
 
         View.SelectionChanged += UpdateSelectionRect;
         View.BoxSelected += OnBoxSelected;
+
+        // 笔刷：按钮与 E 键是同一个开关；滑块直接改视图的像素半径
+        BrushToggle.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == ToggleButton.IsCheckedProperty)
+            {
+                View.SetBrushMode(BrushToggle.IsChecked == true);
+            }
+        };
+
+        BrushSizeSlider.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == Slider.ValueProperty)
+            {
+                View.BrushRadiusPixels = BrushSizeSlider.Value;
+                Map.BrushRadiusPixels = BrushSizeSlider.Value;
+                UpdateBrushCursor(_brushCursor);
+            }
+        };
+
+        View.BrushModeChanged += enabled =>
+        {
+            if (BrushToggle.IsChecked != enabled)
+            {
+                BrushToggle.IsChecked = enabled;
+            }
+
+            if (!enabled)
+            {
+                BrushCursor.IsVisible = false;
+            }
+
+            SetStatus(enabled
+                ? "笔刷：按住左键涂抹，涂到的点会被删掉 · 右边滑块调半径 · 原始文件不动，重新加载即可撤销"
+                : _detail + _gridDetail);
+        };
+
+        View.BrushStrokeChanged += UpdateBrushStroke;
+        View.BrushPointerChanged += UpdateBrushCursor;
+        View.BrushCompleted += OnBrushCompleted;
+
+        // 2D 栅格擦除：同一个工具栏开关，G 键在地图上也能切
+        GridEraseToggle.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == ToggleButton.IsCheckedProperty)
+            {
+                Map.SetEraseMode(GridEraseToggle.IsChecked == true);
+            }
+        };
+
+        Map.EraseModeChanged += enabled =>
+        {
+            if (GridEraseToggle.IsChecked != enabled)
+            {
+                GridEraseToggle.IsChecked = enabled;
+            }
+
+            SetStatus(enabled
+                ? "栅格擦除：在右侧地图上按住左键涂抹（右键平移、滚轮缩放）· 勾「擦成空闲」改刷空闲 · 原始文件不动，重新加载即可撤销"
+                : _detail + _gridDetail);
+        };
+
+        Map.EraseCompleted += OnGridEraseCompleted;
 
         Opened += OnOpened;
 
@@ -253,6 +337,9 @@ public sealed partial class MainWindow : Window
             _grid = result.Grid;
             _gridYaml = result.Package.Yaml;
 
+            // 换了包：撤销栈里的旧数据跟新包没关系了
+            ClearUndo();
+
             if (result.Grid is not null && result.Package.Yaml is not null)
             {
                 Map.SetMap(result.Grid, result.Package.Yaml);
@@ -330,17 +417,6 @@ public sealed partial class MainWindow : Window
     internal async Task<bool> ApplySelectionAsync(
         ScreenBox box, bool keepInside = false, Matrix4x4? viewProjection = null)
     {
-        if (_busy)
-        {
-            return false;
-        }
-
-        if (View.CurrentCloud is not { } source)
-        {
-            SetStatus("没有点云可框选");
-            return false;
-        }
-
         if (box.IsEmpty)
         {
             SetStatus("框选范围太小，已忽略");
@@ -348,7 +424,51 @@ public sealed partial class MainWindow : Window
         }
 
         Matrix4x4 viewProjectionMatrix = viewProjection ?? View.Camera.GetViewProjection(View.CurrentAspect);
-        string name = keepInside ? "框选保留" : "框选删除";
+        return await ApplyCloudEditAsync(
+            keepInside ? "框选保留" : "框选删除",
+            "框内没有点（原数据不变）",
+            (source, progress) => PointCloudOps.CropScreenBox(
+                source, viewProjectionMatrix, box, keepInside, progress));
+    }
+
+    /// <summary>把一条笔迹落到数据上：删掉折线（圆头）覆盖的点。</summary>
+    /// <param name="viewProjection">默认取视图当下的相机；测试传固定矩阵，避开相机状态。</param>
+    /// <param name="aspect">默认取视图当下的宽高比；测试固定成 1，避开窗口尺寸。</param>
+    /// <returns>是否真的改了数据。</returns>
+    internal async Task<bool> ApplyBrushAsync(
+        Vector2[] path, float radius, Matrix4x4? viewProjection = null, float? aspect = null)
+    {
+        if (path.Length == 0)
+        {
+            SetStatus("笔迹为空，已忽略");
+            return false;
+        }
+
+        Matrix4x4 viewProjectionMatrix = viewProjection ?? View.Camera.GetViewProjection(View.CurrentAspect);
+        float aspectValue = aspect ?? View.CurrentAspect;
+        return await ApplyCloudEditAsync(
+            "笔刷擦除",
+            "笔刷范围内没有点（原数据不变）",
+            (source, progress) => PointCloudOps.CropScreenBrush(
+                source, viewProjectionMatrix, path, radius, aspectValue, progress));
+    }
+
+    /// <summary>把一次屏幕编辑算子落到数据上：busy 闸门 + 进度 + 全删保护 + 换云上屏。</summary>
+    /// <param name="name">状态栏里的算子名（如「框选删除」「笔刷擦除」）。</param>
+    /// <param name="emptyHint">一个点都没删掉时的说明。</param>
+    private async Task<bool> ApplyCloudEditAsync(
+        string name, string emptyHint, Func<XyzCloud, IProgress<double>, XyzCloud> edit)
+    {
+        if (_busy)
+        {
+            return false;
+        }
+
+        if (View.CurrentCloud is not { } source)
+        {
+            SetStatus("没有点云可编辑：先打开地图包");
+            return false;
+        }
 
         _busy = true;
         var watch = Stopwatch.StartNew();
@@ -357,31 +477,35 @@ public sealed partial class MainWindow : Window
             SetStatus($"{name}：处理中…");
             var progress = new Progress<double>(p => SetStatus($"{name}：{p:P0}"));
 
-            XyzCloud result = await Task.Run(
-                () => PointCloudOps.CropScreenBox(source, viewProjectionMatrix, box, keepInside, progress));
+            XyzCloud result = await Task.Run(() => edit(source, progress));
             watch.Stop();
 
             int removed = source.PointCount - result.PointCount;
-            if (removed == 0)
+            if (removed <= 0)
             {
-                SetStatus($"{name}：框内没有点（原数据不变）");
+                SetStatus($"{name}：{emptyHint}");
                 return false;
             }
 
             if (result.PointCount == 0)
             {
-                // 全删光等于把地图删了：多半是框拖大了，宁可不动
-                SetStatus($"{name}：这会把点全删光，已放弃（换个更小的框，或改用「只保留框内」）");
+                // 全删光等于把地图删了：多半是框拖大了/笔刷太大，宁可不动
+                SetStatus($"{name}：这会把点全删光，已放弃（换个更小的范围）");
                 return false;
             }
 
+            // 先把旧云的所有权收进撤销栈，再换新云：SetCloud 会在上传时释放旧云
+            PushUndo(name, takeCloud: true);
+
+            _cloudPointCount = result.PointCount;
             _detail = string.Create(CultureInfo.InvariantCulture,
                 $"{_package?.DisplayName ?? "点云"} · {result.PointCount:N0} 点 · " +
                 $"{name} -{removed:N0} {watch.ElapsedMilliseconds} ms");
 
             View.SetCloud(result);
             Map.SetOverlay(result.SamplePoints(OverlaySampleCount));
-            SetStatus(_detail + _gridDetail + " · 上传中… · 撤销：优化 ▾ → 撤销全部优化（重新加载）");
+            UpdateDrawnDetail();
+            SetStatus(_detail + _gridDetail + " · 上传中… · 撤销：Ctrl+Z");
             return true;
         }
         catch (Exception ex)
@@ -394,6 +518,217 @@ public sealed partial class MainWindow : Window
             _busy = false;
         }
     }
+
+    // ── 撤销栈 ───────────────────────────────────────────────────────────────
+    //
+    // 编辑类算子（框选/笔刷/栅格擦除/优化）动手前把「改动前的状态」压栈：
+    // 点云是不可变对象，压栈只是拿个引用（零拷贝的旧云还挂在文件映射上，几乎不占内存）；
+    // 所有权从视图转到撤销栈，撤销那一刻再交回视图。重新加载/合并会清空。
+    //
+    // 不做重做：撤销之后再编辑会把后面的步数丢掉，和大多数编辑器一致。
+
+    /// <summary>一步可撤销的编辑：改动前的点云、栅格与状态栏文案。</summary>
+    /// <param name="Cloud">改动前的点云（<c>null</c> = 这一步没动点云，只动了栅格）。</param>
+    private sealed record EditSnapshot(
+        string Label, XyzCloud? Cloud, PgmImage? Grid, MapYaml? GridYaml,
+        long PointCount, string Detail, string GridDetail);
+
+    /// <summary>把「改动前」的状态压进撤销栈。调用点必须在数据被改之前。</summary>
+    /// <param name="label">状态栏上显示的这一步叫什么。</param>
+    /// <param name="takeCloud">是否从视图取走点云的所有权（只动栅格的编辑传 false）。</param>
+    private void PushUndo(string label, bool takeCloud)
+    {
+        XyzCloud? cloud = takeCloud ? View.DetachCloud() : null;
+
+        _undo.Add(new EditSnapshot(label, cloud, _grid, _gridYaml, _cloudPointCount, _detail, _gridDetail));
+
+        DropOldSnapshots();
+        UpdateUndoButton();
+    }
+
+    /// <summary>丢掉过深/超预算的旧快照。丢掉的那份云要自己释放：视图已经不管它了。</summary>
+    private void DropOldSnapshots()
+    {
+        while (_undo.Count > UndoDepth)
+        {
+            _undo[0].Cloud?.Dispose();
+            _undo.RemoveAt(0);
+        }
+
+        // 8 步 × 48 M 点的副本能吃掉几个 G：按实际占用再砍一遍，至少留一步
+        while (_undo.Count > 1 && UndoBytes() > UndoBudgetBytes)
+        {
+            _undo[0].Cloud?.Dispose();
+            _undo.RemoveAt(0);
+        }
+    }
+
+    /// <summary>快照当前占用的内存：栅格图按像素算，点云只算非零拷贝的（映射文件不算真占用）。</summary>
+    private long UndoBytes()
+    {
+        long bytes = 0;
+        foreach (EditSnapshot snapshot in _undo)
+        {
+            if (snapshot.Cloud is { IsZeroCopy: false } cloud)
+            {
+                bytes += cloud.ByteLength;
+            }
+
+            if (snapshot.Grid is { } grid)
+            {
+                bytes += (long)grid.Width * grid.Height;
+            }
+        }
+
+        return bytes;
+    }
+
+    /// <summary>清空撤销栈（换包、合并这类「历史全作废」的场合）。</summary>
+    private void ClearUndo()
+    {
+        foreach (EditSnapshot snapshot in _undo)
+        {
+            snapshot.Cloud?.Dispose();
+        }
+
+        _undo.Clear();
+        UpdateUndoButton();
+    }
+
+    private void UpdateUndoButton()
+    {
+        UndoButton.IsEnabled = _undo.Count > 0;
+        UndoButton.Content = _undo.Count > 0 ? $"撤销 {_undo[^1].Label} (Ctrl+Z)" : "撤销 (Ctrl+Z)";
+    }
+
+    private async void OnUndoClick(object? sender, RoutedEventArgs e) => await UndoAsync();
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.Key == Key.Z && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            e.Handled = true;
+            _ = UndoAsync();
+            return;
+        }
+
+        base.OnKeyDown(e);
+    }
+
+    /// <summary>撤销最近一次编辑：把点云/栅格换回改动前的那份。</summary>
+    /// <returns>是否真的撤销了一步。</returns>
+    internal async Task<bool> UndoAsync()
+    {
+        if (_busy)
+        {
+            return false;
+        }
+
+        if (_undo.Count == 0)
+        {
+            SetStatus("没有可撤销的编辑");
+            return false;
+        }
+
+        EditSnapshot snapshot = _undo[^1];
+        _undo.RemoveAt(_undo.Count - 1);
+        _busy = true;
+
+        try
+        {
+            if (snapshot.Cloud is not null)
+            {
+                // 所有权交回视图：它会在下次换云时释放
+                View.SetCloud(snapshot.Cloud);
+                Map.SetOverlay(snapshot.Cloud.SamplePoints(OverlaySampleCount));
+            }
+
+            _cloudPointCount = snapshot.PointCount;
+            _detail = snapshot.Detail;
+            _gridDetail = snapshot.GridDetail;
+
+            if (snapshot.Grid is not null && snapshot.GridYaml is not null)
+            {
+                _grid = snapshot.Grid;
+                _gridYaml = snapshot.GridYaml;
+                Map.SetMap(_grid, _gridYaml, fit: false);
+                await RebuildGroundAsync(_grid, _gridYaml);
+            }
+            else if (_grid is not null)
+            {
+                // 快照里没栅格 = 那时也没有栅格，清掉 2D 面板与地面
+                _grid = null;
+                Map.ClearMap();
+                View.SetGroundTexture(null);
+            }
+
+            UpdateDrawnDetail();
+            SetStatus($"已撤销：{snapshot.Label} · {_detail}{_gridDetail}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"撤销失败：{ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            _busy = false;
+            UpdateUndoButton();
+        }
+    }
+
+    // ── 笔刷 ─────────────────────────────────────────────────────────────────
+    //
+    // 拖动中只画折线（Avalonia 叠加层），松手才动数据：每帧重建 48 M 点的云不现实，
+    // 一条笔迹攒成折线后一次性判定，和框选共用同一个投影矩阵。
+
+    /// <summary>笔迹：粗折线（圆头圆角），几何上与 Core 判定的「折线胶囊」一致。</summary>
+    private void UpdateBrushStroke(IReadOnlyList<Vector2> path, double radius)
+    {
+        double width = SelectionCanvas.Bounds.Width;
+        double height = SelectionCanvas.Bounds.Height;
+
+        if (path.Count < 2)
+        {
+            // 单点还没形成线段：留着圆环就够了
+            BrushStroke.IsVisible = false;
+            return;
+        }
+
+        BrushStroke.StrokeThickness = Math.Max(radius * width * 2, 2);
+        BrushStroke.Points.Clear();
+        foreach (Vector2 point in path)
+        {
+            BrushStroke.Points.Add(new Point(point.X * width, point.Y * height));
+        }
+
+        BrushStroke.IsVisible = true;
+    }
+
+    /// <summary>笔刷光标圆环：半径是像素值，宽高一致才是圆（与 Core 的 aspect 折算等价）。</summary>
+    private void UpdateBrushCursor(Vector2? position)
+    {
+        _brushCursor = position;
+
+        if (position is not { } at || !View.BrushMode)
+        {
+            BrushCursor.IsVisible = false;
+            return;
+        }
+
+        double width = SelectionCanvas.Bounds.Width;
+        double height = SelectionCanvas.Bounds.Height;
+        double radius = View.BrushRadiusPixels;
+
+        Canvas.SetLeft(BrushCursor, (at.X * width) - radius);
+        Canvas.SetTop(BrushCursor, (at.Y * height) - radius);
+        BrushCursor.Width = Math.Max(radius * 2, 2);
+        BrushCursor.Height = Math.Max(radius * 2, 2);
+        BrushCursor.IsVisible = true;
+    }
+
+    private async void OnBrushCompleted(Vector2[] path, double radius) => await ApplyBrushAsync(path, (float)radius);
 
     /// <summary>状态栏的抽样提示：只在真的抽样时出现。</summary>
     private void UpdateDrawnDetail()
@@ -864,14 +1199,18 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
+            PushUndo(name, takeCloud: true);
+
             Vector3 size = result.Bounds.Size;
+            _cloudPointCount = result.PointCount;
             _detail = string.Create(CultureInfo.InvariantCulture,
                 $"{_package?.DisplayName ?? "点云"} · {result.PointCount:N0} 点 · {name} {watch.ElapsedMilliseconds} ms · " +
                 $"包围盒 {size.X:F0}×{size.Y:F0}×{size.Z:F0} m");
 
             View.SetCloud(result);
             Map.SetOverlay(result.SamplePoints(OverlaySampleCount));
-            SetStatus(_detail + _gridDetail + " · 上传中…");
+            UpdateDrawnDetail();
+            SetStatus(_detail + _gridDetail + " · 上传中… · 撤销：Ctrl+Z");
         }
         catch (Exception ex)
         {
@@ -905,8 +1244,18 @@ public sealed partial class MainWindow : Window
             SetStatus($"{name}：处理中…");
 
             GridMorphResult result = await Task.Run(() => operation(source, yaml));
-            GroundTexture? ground = await Task.Run(() => GroundTexture.Build(result.Image, yaml));
             watch.Stop();
+
+            if (result.ChangedPixels == 0)
+            {
+                // 一个像素都没改：别往撤销栈里塞一步「什么都没变」
+                SetStatus($"{name}：没有可改的像素（原数据不变）");
+                return;
+            }
+
+            GroundTexture? ground = await Task.Run(() => GroundTexture.Build(result.Image, yaml));
+
+            PushUndo(name, takeCloud: false);
 
             _grid = result.Image;
             Map.SetMap(result.Image, yaml);
@@ -924,6 +1273,100 @@ public sealed partial class MainWindow : Window
         finally
         {
             _busy = false;
+        }
+    }
+
+    // ── 2D 栅格擦除 ───────────────────────────────────────────────────────────
+    //
+    // 与 3D 笔刷同构：拖动只画预览，松手才改像素。栅格改完立刻刷新小地图，
+    // 地面纹理跟着重建（30.7 M px 实测 38 ms，等得起），否则 3D 里的地面和栅格会对不上。
+
+    private async void OnGridEraseCompleted(Vector2[] path, double radiusGrid)
+        => await ApplyGridEraseAsync(path, radiusGrid, SelectedEraseTarget);
+
+    /// <summary>工具栏勾「擦成空闲」= 刷空闲，否则刷未知。</summary>
+    private OccupancyCell SelectedEraseTarget
+        => GridEraseFreeCheck.IsChecked == true ? OccupancyCell.Free : OccupancyCell.Unknown;
+
+    /// <summary>把一条栅格笔迹落到数据上：把笔迹覆盖的像素刷成未知 / 空闲。</summary>
+    /// <param name="path">栅格像素坐标折线（连续值）。</param>
+    /// <param name="radiusGrid">笔刷半径（栅格像素）。</param>
+    /// <returns>是否真的改了栅格。</returns>
+    internal async Task<bool> ApplyGridEraseAsync(
+        Vector2[] path, double radiusGrid, OccupancyCell target = OccupancyCell.Unknown)
+    {
+        if (_busy)
+        {
+            return false;
+        }
+
+        if (_grid is not { } source || _gridYaml is not { } yaml)
+        {
+            SetStatus("没有栅格地图可擦除：先打开地图包");
+            return false;
+        }
+
+        var watch = Stopwatch.StartNew();
+
+        try
+        {
+            GridMorphResult result = await Task.Run(
+                () => GridEraser.Erase(source, yaml, path, radiusGrid, target));
+            watch.Stop();
+
+            if (result.ChangedPixels == 0)
+            {
+                SetStatus($"栅格擦除：这片已经是{DescribeCell(target)}（原数据不变）");
+                return false;
+            }
+
+            PushUndo($"栅格擦除→{DescribeCell(target)}", takeCloud: false);
+
+            _grid = result.Image;
+            // fit: false —— 每涂一笔都把画面缩回全图的话根本没法连续作业
+            Map.SetMap(result.Image, yaml, fit: false);
+
+            _gridDetail = DescribeGrid(yaml, result.Image) + string.Create(CultureInfo.InvariantCulture,
+                $" · 栅格擦除→{DescribeCell(target)} {result.ChangedPixels:N0} px {watch.ElapsedMilliseconds} ms");
+
+            SetStatus(_detail + _gridDetail);
+            await RebuildGroundAsync(result.Image, yaml);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"栅格擦除失败：{ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static string DescribeCell(OccupancyCell cell) => cell switch
+    {
+        OccupancyCell.Free => "空闲",
+        OccupancyCell.Occupied => "占用",
+        _ => "未知",
+    };
+
+    /// <summary>
+    /// 按栅格重建地面纹理。<paramref name="yaml"/> 与栅格一起给：中途换了包的话重建的就不是当前这张。
+    /// 实测 6811×4503（30.7 M px）只要 38 ms，直接等它，不值得为这点时间做一套合并逻辑；
+    /// 连涂几笔时用版本号保证只有最后发起的那次结果上屏（前面的结果已经过时）。
+    /// </summary>
+    private async Task RebuildGroundAsync(PgmImage grid, MapYaml yaml)
+    {
+        int version = ++_groundVersion;
+
+        try
+        {
+            GroundTexture? ground = await Task.Run(() => GroundTexture.Build(grid, yaml));
+            if (version == _groundVersion)
+            {
+                View.SetGroundTexture(ground);
+            }
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"地面纹理重建失败：{ex.GetType().Name}: {ex.Message} · 栅格已改，重新加载可复原");
         }
     }
 
@@ -1081,6 +1524,9 @@ public sealed partial class MainWindow : Window
             $"{outcome.ReferenceName} + {outcome.SourceName} · {merged.PointCount:N0} 点 · " +
             $"合并 {elapsed.TotalSeconds:F0} s · 包围盒 {size.X:F0}×{size.Y:F0}×{size.Z:F0} m");
         Title = $"MyPcdEditor — {outcome.ReferenceName} + {outcome.SourceName}（已合并）";
+
+        // 合并同时换了包与栅格坐标系，撤销栈里那些快照没法还原（重新加载才是退路）
+        ClearUndo();
 
         View.SetCloud(merged);
 

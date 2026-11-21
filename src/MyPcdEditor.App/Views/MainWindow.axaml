@@ -11,7 +11,9 @@
   <DockPanel LastChildFill="True">
 
     <Border DockPanel.Dock="Top" Background="#181C22" Padding="10,8" BorderBrush="#262B33" BorderThickness="0,0,0,1">
-      <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+      <!-- 工具栏已经长到放不下一行了：窄窗口横向滚动，别把按钮挤到看不见 -->
+      <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
         <Button x:Name="OpenButton" Content="打开地图包…" Click="OnOpenClick" />
         <Button x:Name="FitButton" Content="适配视图 (F)" Click="OnFitClick" />
         <Button x:Name="ResetButton" Content="复位 (R)" Click="OnResetClick" />
@@ -57,6 +59,11 @@
 
         <Border Width="1" Background="#2A303A" Margin="4,2" />
 
+        <Button x:Name="UndoButton" Content="撤销 (Ctrl+Z)" IsEnabled="False" Click="OnUndoClick"
+                ToolTip.Tip="撤销最近一次编辑（框选 / 笔刷 / 栅格擦除 / 优化）。重新加载或合并之后历史会清空" />
+
+        <Border Width="1" Background="#2A303A" Margin="4,2" />
+
         <Button x:Name="MergeButton" Content="合并 ▾"
                 ToolTip.Tip="把另一个地图包并进当前包：先按 .projected_origin 锚点定初值，再用点云 ICP 精配准，最后拼接点云与栅格">
           <Button.Flyout>
@@ -76,12 +83,18 @@
         <ToggleButton x:Name="BrushToggle" Content="笔刷 (E)"
                       ToolTip.Tip="打开后按住左键涂抹：涂到的点会被删掉。E 切换模式，右边滑块调半径；原始文件不动，重新加载即可撤销" />
         <Slider x:Name="BrushSizeSlider" Minimum="4" Maximum="160" Value="32" Width="110"
-                VerticalAlignment="Center" ToolTip.Tip="笔刷半径（像素）" />
+                VerticalAlignment="Center" ToolTip.Tip="笔刷半径（像素，3D 笔刷与 2D 栅格擦除共用）" />
+
+        <ToggleButton x:Name="GridEraseToggle" Content="栅格擦除 (G)"
+                      ToolTip.Tip="打开后在右侧 2D 地图上按住左键涂抹：刷到的像素改成未知（勾选「擦成空闲」则刷成空闲）。右键平移、滚轮缩放；原始文件不动，重新加载即可撤销" />
+        <CheckBox x:Name="GridEraseFreeCheck" Content="擦成空闲" VerticalAlignment="Center"
+                  ToolTip.Tip="勾选 = 刷成空闲（254）；不勾 = 刷成未知（205）" />
 
         <ToggleButton x:Name="MapToggle" Content="2D 地图" IsChecked="True" Click="OnMapToggleClick" />
         <CheckBox x:Name="OverlayCheck" Content="叠加点云" IsChecked="True" VerticalAlignment="Center" />
         <CheckBox x:Name="GroundCheck" Content="地面纹理" IsChecked="True" VerticalAlignment="Center" />
-      </StackPanel>
+        </StackPanel>
+      </ScrollViewer>
     </Border>
 
     <Border DockPanel.Dock="Bottom" Background="#181C22" Padding="10,6" BorderBrush="#262B33" BorderThickness="0,1,0,0">

@@ -315,6 +315,41 @@ public sealed class PointCloudView : GlControlBase
     }
 
     /// <summary>
+    /// 把当前点云的所有权交给调用方（撤销栈用），视图此后不再释放它。
+    /// 视图里此时没有点云（下一帧起画面为空），调用方随后应 <see cref="SetCloud"/> 换上新云。
+    /// </summary>
+    /// <remarks>
+    /// 编辑类操作用得上：<see cref="SetCloud"/> 会在上传新云时释放旧云，
+    /// 想在「撤销」时把旧云交回来，就必须先把所有权取走，不能指望它一直活着。
+    /// </remarks>
+    internal XyzCloud? DetachCloud()
+    {
+        XyzCloud? taken;
+        lock (_sync)
+        {
+            taken = _pendingCloud ?? _activeCloud;
+            _pendingCloud = null;
+
+            if (ReferenceEquals(taken, _activeCloud))
+            {
+                // 正在显示的那份：停掉后台分块扫描，它读的就是这块映射内存
+                CancelChunkBuild();
+                _activeCloud = null;
+            }
+
+            _uploading = false;
+            _uploadOffset = 0;
+            _fitSamples = null;
+        }
+
+        // 框/笔迹对应的是被取走的数据，留着会画在空画面上
+        ClearSelection();
+        ClearBrush();
+        RequestNextFrameRendering();
+        return taken;
+    }
+
+    /// <summary>
     /// 设置地面纹理（<c>null</c> 表示清掉）。实际上传在下一帧渲染回调里做，
     /// 调用方可以在后台线程准备好 <see cref="GroundTexture"/>。
     /// </summary>

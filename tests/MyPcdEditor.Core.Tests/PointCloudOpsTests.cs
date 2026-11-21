@@ -297,6 +297,81 @@ public sealed class PointCloudOpsTests
             cloud, Matrix4x4.Identity, new ScreenBox(0.5f, 0.5f, 0.5f, 0.5f)));
     }
 
+    // ── 笔刷（折线胶囊）──────────────────────────────────────────────────────
+
+    /// <summary>单位阵投影 + 方形视口（aspect = 1）：世界坐标即 NDC，屏幕位置可以手算。</summary>
+    [Fact]
+    public void CropScreenBrush_RemovesPointsAlongStroke()
+    {
+        XyzCloud cloud = MakeCloud(
+            new Vector3(-0.5f, 0f, 0f),    // u = 0.25：离笔迹很远
+            new Vector3(0f, 0f, 0f),       // u = 0.50：笔迹起点
+            new Vector3(0.75f, 0f, 0f),    // u = 0.875：线段中间
+            new Vector3(0.9f, 0.6f, 0f));  // u = 0.95, v = 0.2：在笔迹上方很远
+
+        XyzCloud result = PointCloudOps.CropScreenBrush(
+            cloud, Matrix4x4.Identity, [new Vector2(0.5f, 0.5f), new Vector2(1f, 0.5f)], 0.05f, 1f);
+
+        Assert.Equal(2, result.PointCount);
+        Assert.Equal(-0.5f, PointAt(result, 0).X, 4);
+        Assert.Equal(0.9f, PointAt(result, 1).X, 4);
+    }
+
+    /// <summary>半径之外的点点不删：笔迹在 v = 0.5，测试点离它 0.1。</summary>
+    [Fact]
+    public void CropScreenBrush_RespectsRadius()
+    {
+        XyzCloud cloud = MakeCloud(new Vector3(0.5f, -0.2f, 0f));   // u = 0.75, v = 0.60
+        Vector2[] stroke = [new Vector2(0.5f, 0.5f), new Vector2(1f, 0.5f)];
+
+        XyzCloud narrow = PointCloudOps.CropScreenBrush(cloud, Matrix4x4.Identity, stroke, 0.05f, 1f);
+        Assert.Equal(1, narrow.PointCount);
+
+        XyzCloud wide = PointCloudOps.CropScreenBrush(cloud, Matrix4x4.Identity, stroke, 0.15f, 1f);
+        Assert.Equal(0, wide.PointCount);
+    }
+
+    [Fact]
+    public void CropScreenBrush_SingleVertexIsDot()
+    {
+        XyzCloud cloud = MakeCloud(
+            new Vector3(0.1f, 0.1f, 0f),     // u = 0.55, v = 0.45：正落在笔尖上
+            new Vector3(0.9f, -0.9f, 0f));   // u = 0.95, v = 0.95
+
+        XyzCloud result = PointCloudOps.CropScreenBrush(
+            cloud, Matrix4x4.Identity, [new Vector2(0.55f, 0.45f)], 0.05f, 1f);
+
+        Assert.Equal(1, result.PointCount);
+        Assert.Equal(0.9f, PointAt(result, 0).X, 4);
+    }
+
+    [Fact]
+    public void CropScreenBrush_IgnoresPointsBehindCamera()
+    {
+        Matrix4x4 flipped = Matrix4x4.Identity;
+        flipped.M44 = -1f;
+
+        XyzCloud cloud = MakeCloud(new Vector3(0, 0, 0), new Vector3(0.9f, 0.9f, 0));
+
+        XyzCloud result = PointCloudOps.CropScreenBrush(
+            cloud, flipped, [new Vector2(0.5f, 0.5f)], 0.5f, 1f);
+
+        Assert.Equal(2, result.PointCount);
+    }
+
+    [Fact]
+    public void CropScreenBrush_RejectsBadArguments()
+    {
+        XyzCloud cloud = MakeCloud(new Vector3(0, 0, 0));
+
+        Assert.Throws<ArgumentException>(() => PointCloudOps.CropScreenBrush(
+            cloud, Matrix4x4.Identity, [], 0.05f, 1f));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PointCloudOps.CropScreenBrush(
+            cloud, Matrix4x4.Identity, [new Vector2(0.5f, 0.5f)], 0f, 1f));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PointCloudOps.CropScreenBrush(
+            cloud, Matrix4x4.Identity, [new Vector2(0.5f, 0.5f)], 0.05f, 0f));
+    }
+
     /// <summary>
     /// 体素表按 <c>hash &amp; (capacity-1)</c> 取槽，容量会随点数涨到 2^26。
     /// 散列若只留 24 位，高位槽永远空着、低位槽挤爆，32 M 点降采样会从几秒退化到几分钟没完
