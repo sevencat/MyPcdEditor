@@ -11,88 +11,95 @@
   <DockPanel LastChildFill="True">
 
     <Border DockPanel.Dock="Top" Background="#181C22" Padding="10,8" BorderBrush="#262B33" BorderThickness="0,0,0,1">
-      <!-- 工具栏已经长到放不下一行了：窄窗口横向滚动，别把按钮挤到看不见 -->
+      <!-- 工具栏分两行：上行是「打开 / 视图参数 / 显示开关」，下行是「编辑与处理」。
+           窄窗口时整块仍可横向滚动，不至于把最右边的开关挤没 -->
       <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-        <Button x:Name="OpenButton" Content="打开地图包…" Click="OnOpenClick" />
-        <Button x:Name="FitButton" Content="适配视图 (F)" Click="OnFitClick" />
-        <Button x:Name="ResetButton" Content="复位 (R)" Click="OnResetClick" />
+        <StackPanel Orientation="Vertical" Spacing="8">
 
-        <Border Width="1" Background="#2A303A" Margin="4,2" />
+          <!-- 第一行：打开文件、视图参数、显示开关 -->
+          <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+            <Button x:Name="OpenButton" Content="打开地图包…" Click="OnOpenClick" />
+            <Button x:Name="FitButton" Content="适配视图 (F)" Click="OnFitClick" />
+            <Button x:Name="ResetButton" Content="复位 (R)" Click="OnResetClick" />
 
-        <TextBlock Text="着色" VerticalAlignment="Center" Opacity="0.75" />
-        <ComboBox x:Name="ColorModeBox" SelectedIndex="0" Width="110">
-          <ComboBoxItem Content="高度" />
-          <ComboBoxItem Content="单色" />
-        </ComboBox>
+            <Border Width="1" Background="#2A303A" Margin="4,2" />
 
-        <TextBlock Text="点大小" VerticalAlignment="Center" Opacity="0.75" />
-        <Slider x:Name="PointSizeSlider" Minimum="0.5" Maximum="8" Value="1.6" Width="150" VerticalAlignment="Center" />
+            <TextBlock Text="着色" VerticalAlignment="Center" Opacity="0.75" />
+            <ComboBox x:Name="ColorModeBox" SelectedIndex="0" Width="110">
+              <ComboBoxItem Content="高度" />
+              <ComboBoxItem Content="单色" />
+            </ComboBox>
 
-        <TextBlock Text="细节" VerticalAlignment="Center" Opacity="0.75" />
-        <ComboBox x:Name="DetailBox" SelectedIndex="0" Width="110" ToolTip.Tip="点数多时降密度换取帧率：点云按空间均匀抽样，不会只显示一部分">
-          <ComboBoxItem Content="全部" />
-          <ComboBoxItem Content="1/2" />
-          <ComboBoxItem Content="1/4" />
-          <ComboBoxItem Content="1/8" />
-        </ComboBox>
+            <TextBlock Text="点大小" VerticalAlignment="Center" Opacity="0.75" />
+            <Slider x:Name="PointSizeSlider" Minimum="0.5" Maximum="8" Value="1.6" Width="150" VerticalAlignment="Center" />
 
-        <Border Width="1" Background="#2A303A" Margin="4,2" />
+            <TextBlock Text="细节" VerticalAlignment="Center" Opacity="0.75" />
+            <ComboBox x:Name="DetailBox" SelectedIndex="0" Width="110" ToolTip.Tip="点数多时降密度换取帧率：点云按空间均匀抽样，不会只显示一部分">
+              <ComboBoxItem Content="全部" />
+              <ComboBoxItem Content="1/2" />
+              <ComboBoxItem Content="1/4" />
+              <ComboBoxItem Content="1/8" />
+            </ComboBox>
 
-        <Button x:Name="OptimizeButton" Content="优化 ▾" ToolTip.Tip="对当前点云 / 栅格做算子处理，处理结果直接替换视图中的数据（原始文件不动）">
-          <Button.Flyout>
-            <MenuFlyout>
-              <MenuItem Header="点云 · 体素降采样…" Click="OnVoxelDownsampleClick" />
-              <MenuItem Header="点云 · 统计去噪 (SOR)…" Click="OnOutlierRemovalClick" />
-              <MenuItem Header="点云 · 按范围裁剪…" Click="OnCropClick" />
-              <Separator />
-              <MenuItem Header="栅格 · 去毛刺" Click="OnDespeckleClick" />
-              <MenuItem Header="栅格 · 补洞" Click="OnCloseHolesClick" />
-              <MenuItem Header="栅格 · 去孤岛…" Click="OnRemoveIslandsClick" />
-              <Separator />
-              <MenuItem Header="导出当前结果…" Click="OnExportClick" />
-              <MenuItem Header="替换当前地图包（覆盖原文件）…" Click="OnReplaceClick" />
-              <MenuItem Header="撤销全部优化（重新加载）" Click="OnRevertClick" />
-            </MenuFlyout>
-          </Button.Flyout>
-        </Button>
+            <Border Width="1" Background="#2A303A" Margin="4,2" />
 
-        <Border Width="1" Background="#2A303A" Margin="4,2" />
+            <ToggleButton x:Name="MapToggle" Content="2D 地图" IsChecked="True" Click="OnMapToggleClick" />
+            <CheckBox x:Name="OverlayCheck" Content="叠加点云" IsChecked="True" VerticalAlignment="Center" />
+            <CheckBox x:Name="GroundCheck" Content="地面纹理" IsChecked="True" VerticalAlignment="Center" />
+          </StackPanel>
 
-        <Button x:Name="UndoButton" Content="撤销 (Ctrl+Z)" IsEnabled="False" Click="OnUndoClick"
-                ToolTip.Tip="撤销最近一次编辑（框选 / 笔刷 / 栅格擦除 / 优化）。重新加载或合并之后历史会清空" />
+          <!-- 第二行：编辑与处理 -->
+          <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+            <Button x:Name="OptimizeButton" Content="优化 ▾" ToolTip.Tip="对当前点云 / 栅格做算子处理，处理结果直接替换视图中的数据（原始文件不动）">
+              <Button.Flyout>
+                <MenuFlyout>
+                  <MenuItem Header="点云 · 体素降采样…" Click="OnVoxelDownsampleClick" />
+                  <MenuItem Header="点云 · 统计去噪 (SOR)…" Click="OnOutlierRemovalClick" />
+                  <MenuItem Header="点云 · 按范围裁剪…" Click="OnCropClick" />
+                  <Separator />
+                  <MenuItem Header="栅格 · 去毛刺" Click="OnDespeckleClick" />
+                  <MenuItem Header="栅格 · 补洞" Click="OnCloseHolesClick" />
+                  <MenuItem Header="栅格 · 去孤岛…" Click="OnRemoveIslandsClick" />
+                  <Separator />
+                  <MenuItem Header="导出当前结果…" Click="OnExportClick" />
+                  <MenuItem Header="替换当前地图包（覆盖原文件）…" Click="OnReplaceClick" />
+                  <MenuItem Header="撤销全部优化（重新加载）" Click="OnRevertClick" />
+                </MenuFlyout>
+              </Button.Flyout>
+            </Button>
 
-        <Border Width="1" Background="#2A303A" Margin="4,2" />
+            <Button x:Name="UndoButton" Content="撤销 (Ctrl+Z)" IsEnabled="False" Click="OnUndoClick"
+                    ToolTip.Tip="撤销最近一次编辑（框选 / 笔刷 / 栅格擦除 / 优化）。重新加载或合并之后历史会清空" />
 
-        <Button x:Name="MergeButton" Content="合并 ▾"
-                ToolTip.Tip="把另一个地图包并进当前包：先按 .projected_origin 锚点定初值，再用点云 ICP 精配准，最后拼接点云与栅格">
-          <Button.Flyout>
-            <MenuFlyout>
-              <MenuItem Header="合并另一个地图包…" Click="OnMergeClick" />
-              <MenuItem x:Name="ReportMenuItem" Header="查看上次对齐报告…" IsEnabled="False" Click="OnReportClick" />
-            </MenuFlyout>
-          </Button.Flyout>
-        </Button>
-        <Button x:Name="CancelMergeButton" Content="取消合并" IsVisible="False" Click="OnCancelMergeClick" />
+            <Border Width="1" Background="#2A303A" Margin="4,2" />
 
-        <Border Width="1" Background="#2A303A" Margin="4,2" />
+            <Button x:Name="MergeButton" Content="合并 ▾"
+                    ToolTip.Tip="把另一个地图包并进当前包：先按 .projected_origin 锚点定初值，再用点云 ICP 精配准，最后拼接点云与栅格">
+              <Button.Flyout>
+                <MenuFlyout>
+                  <MenuItem Header="合并另一个地图包…" Click="OnMergeClick" />
+                  <MenuItem x:Name="ReportMenuItem" Header="查看上次对齐报告…" IsEnabled="False" Click="OnReportClick" />
+                </MenuFlyout>
+              </Button.Flyout>
+            </Button>
+            <Button x:Name="CancelMergeButton" Content="取消合并" IsVisible="False" Click="OnCancelMergeClick" />
 
-        <ToggleButton x:Name="BoxSelectToggle" Content="框选 (B)"
-                      ToolTip.Tip="打开后用左键拖出矩形：框内的点会被删掉（Shift + 拖 = 只保留框内）。原始文件不动，重新加载即可撤销" />
+            <Border Width="1" Background="#2A303A" Margin="4,2" />
 
-        <ToggleButton x:Name="BrushToggle" Content="笔刷 (E)"
-                      ToolTip.Tip="打开后按住左键涂抹：涂到的点会被删掉。E 切换模式，右边滑块调半径；原始文件不动，重新加载即可撤销" />
-        <Slider x:Name="BrushSizeSlider" Minimum="4" Maximum="160" Value="32" Width="110"
-                VerticalAlignment="Center" ToolTip.Tip="笔刷半径（像素，3D 笔刷与 2D 栅格擦除共用）" />
+            <ToggleButton x:Name="BoxSelectToggle" Content="框选 (B)"
+                          ToolTip.Tip="打开后用左键拖出矩形：框内的点会被删掉（Shift + 拖 = 只保留框内）。原始文件不动，重新加载即可撤销" />
 
-        <ToggleButton x:Name="GridEraseToggle" Content="栅格擦除 (G)"
-                      ToolTip.Tip="打开后在右侧 2D 地图上按住左键涂抹：刷到的像素改成未知（勾选「擦成空闲」则刷成空闲）。右键平移、滚轮缩放；原始文件不动，重新加载即可撤销" />
-        <CheckBox x:Name="GridEraseFreeCheck" Content="擦成空闲" VerticalAlignment="Center"
-                  ToolTip.Tip="勾选 = 刷成空闲（254）；不勾 = 刷成未知（205）" />
+            <ToggleButton x:Name="BrushToggle" Content="笔刷 (E)"
+                          ToolTip.Tip="打开后按住左键涂抹：涂到的点会被删掉。E 切换模式，右边滑块调半径；原始文件不动，重新加载即可撤销" />
+            <Slider x:Name="BrushSizeSlider" Minimum="4" Maximum="160" Value="32" Width="110"
+                    VerticalAlignment="Center" ToolTip.Tip="笔刷半径（像素，3D 笔刷与 2D 栅格擦除共用）" />
 
-        <ToggleButton x:Name="MapToggle" Content="2D 地图" IsChecked="True" Click="OnMapToggleClick" />
-        <CheckBox x:Name="OverlayCheck" Content="叠加点云" IsChecked="True" VerticalAlignment="Center" />
-        <CheckBox x:Name="GroundCheck" Content="地面纹理" IsChecked="True" VerticalAlignment="Center" />
+            <ToggleButton x:Name="GridEraseToggle" Content="栅格擦除 (G)"
+                          ToolTip.Tip="打开后在右侧 2D 地图上按住左键涂抹：刷到的像素改成未知（勾选「擦成空闲」则刷成空闲）。右键平移、滚轮缩放；原始文件不动，重新加载即可撤销" />
+            <CheckBox x:Name="GridEraseFreeCheck" Content="擦成空闲" VerticalAlignment="Center"
+                      ToolTip.Tip="勾选 = 刷成空闲（254）；不勾 = 刷成未知（205）" />
+          </StackPanel>
+
         </StackPanel>
       </ScrollViewer>
     </Border>

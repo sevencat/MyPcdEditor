@@ -56,6 +56,13 @@ public sealed class MapPackageWriterTests
 
             Assert.NotNull(reopened.Index);
             Assert.Equal("map", Assert.Single(reopened.Index!.Grids).Name);
+
+            // toml 整份照抄，path 也照抄：下游按 name 找同目录文件，不靠 path；
+            // 改写成导出目录的 Windows 路径对 Linux 侧毫无意义，还会丢掉采集机上的原值
+            Assert.Equal("/home/ysc/map", reopened.Index.Path);
+            Assert.Equal(
+                File.ReadAllBytes(reference.IndexPath!),
+                File.ReadAllBytes(reopened.IndexPath!));
         }
         finally
         {

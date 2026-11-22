@@ -4,6 +4,80 @@
 
 ---
 
+## 2026-11-22（二十）工具栏分两行：一行确实放不下了
+
+### 改了什么
+
+- 工具栏由「一个横向 StackPanel + 横向滚动」改成**两行垂直排列**，按用途分行：
+  - 上行「打开 / 视图 / 显示」：打开地图包、适配视图、复位 | 着色、点大小、细节 | 2D 地图、叠加点云、地面纹理；
+  - 下行「编辑 / 处理」：优化 ▾、撤销 | 合并 ▾、取消合并 | 框选、笔刷 + 半径、栅格擦除 + 擦成空闲。
+- 外层 `ScrollViewer` 保留（横向 Auto、纵向 Disabled），两行共用同一个横向滚动：窄窗口下整体右移，
+  不会把最右边那几个开关挤没。分隔符仍在行内做视觉分组。
+
+### 实测（headless 量 `ScrollViewer` 的 viewport / extent，Release）
+
+| 窗口宽 | viewport | 内容宽 | 结果 |
+|---|---|---|---|
+| 1360（默认） | 1340 | 1112 | 不滚动，右侧留白 228 px |
+| 1100 | 1080 | 1112 | 需滚 32 px |
+| 900（MinWidth） | 880 | 1112 | 需滚 232 px |
+
+两行内容宽分别是 1112 / 753。`MinWidth=900` 时仍要横向滚动，这是兜底而不是常态——
+把 13 个控件硬压进 880 px 只能靠把滑块和下拉缩到不好用，故保留滚动。
+
+### 验证
+
+`dotnet build -warnaserror` 0 警告 0 错误；`dotnet test` Core 100 + App 33 = **133 全绿**
+（App 用例都在 `new MainWindow()` 上跑，XAML 能加载、控件按 `x:Name` 找得到就是这两件事的回归）。
+
+---
+
+## 2026-11-22（十九）导出产物的逐文件核对：toml 的 path 照抄不改
+
+### 改了什么
+
+- 用真实包（`map-20261116-180314`，16.19 M 点 / 6811×4503）实跑一次导出，逐个核对五个文件：
+  `jueying.pcd`（16,193,746 点，读回一致）、`jueying.pgm`（`P5` + 来源注释行 + 6811 4503 + 255）、
+  `jueying.yaml`（`image: jueying.pgm`，数值走 G9 少了尾零但语义不变）、`.projected_origin`（锚点 + zone 21）、
+  `jueying_id_map.toml`（`[[grids]]` 正确）。导出耗时 116 ms（Release）。
+- 唯一有歧义的是 toml 里的 `path`：它仍是采集机上的 Linux 绝对路径。确认按**照抄**处理——
+  下游按 `[[grids]].name` 找同目录的 pgm/yaml，不靠 `path` 定位；改写成本机 Windows 路径没有意义，
+  写成 `./` 又要下游支持相对路径。与 yaml 的 `image` 不冲突：`image` 是外部工具真会读的字段。
+- `MapPackageWriter` 里那处注释写明了「path 故意不改写」及其理由，避免以后被当成 bug「顺手修正」。
+
+### 验证
+
+`dotnet build -warnaserror` 0 警告 0 错误；`dotnet test` Core 100 + App 33 = **133 全绿**。
+`Write_ProducesPackageThatOpensBack` 加了两条断言：读回的 `Index.Path` 必须仍是 `/home/ysc/map`，
+且导出的 toml 与参考包的 toml **字节级相同**（防以后有人改成「顺手改写 path」）。
+
+---
+
+## 2026-11-22（十八）PGM 写出补齐 P5 与来源注释行
+
+### 改了什么
+
+- `PgmWriter.Write` 的头部从 `P5\n宽 高\nmaxval` 改成现场那批 2D grid mapping 工具的写法：
+
+  ```
+  P5
+  # create by 2D grid mapping
+  6811 4503
+  255
+  ```
+
+  导出的包与「替换原包」都走 `PgmWriter`（`MapPackageWriter.Prepare` 里只有这一处写 pgm），
+  所以两条落地路径的头部一次性对齐，不会出现「自己导出的包下游认不出来」。
+
+### 验证
+
+`dotnet build -warnaserror` 0 警告 0 错误；`dotnet test` Core 100 + App 33 = **133 全绿**。
+`PgmWriter_RoundTripsThroughReader` 加了一条字节级断言：写出文件必须以
+`P5\n# create by 2D grid mapping\n5 3\n255\n` 开头，再走 `PgmReader` 读回校验宽高与像素。
+`PgmReader` 本来就按规范跳过 `#` 注释行，所以注释行不影响读回。
+
+---
+
 ## 2026-11-21（十七）撤销栈：编辑错了不用重新加载
 
 ### 改了什么

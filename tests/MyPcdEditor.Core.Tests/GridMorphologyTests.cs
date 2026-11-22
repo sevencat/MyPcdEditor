@@ -230,6 +230,12 @@ public sealed class GridMorphologyTests
         try
         {
             PgmWriter.Write(path, image);
+
+            // 头部必须与现场那批工具一致：P5 + 来源注释行 + 宽高 + maxval
+            Assert.True(
+                File.ReadAllBytes(path).AsSpan().StartsWith("P5\n# create by 2D grid mapping\n5 3\n255\n"u8),
+                "PGM 头部应带 P5 与来源注释行");
+
             PgmImage read = PgmReader.Read(path);
 
             Assert.Equal(image.Width, read.Width);

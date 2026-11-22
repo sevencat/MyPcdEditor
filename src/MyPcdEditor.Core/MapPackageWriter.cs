@@ -145,7 +145,9 @@ public static class MapPackageWriter
                 temp => File.Copy(origin, temp, overwrite: true));
         }
 
-        // 栅格索引：id/name 不变，整份复制（[[grids]] 段里的 path 指向目录，与本机路径无关）
+        // 栅格索引：id/name 不变，整份照抄，连 path 也照抄
+        // path 故意不改写：下游按 [[grids]] 的 name 找**同目录**的 pgm/yaml，不靠 path 定位；
+        // 而改写成导出目录的 Windows 路径对 Linux 机器狗没有意义，只会把采集机上的原值弄丢。
         if (reference.IndexPath is { } index && File.Exists(index))
         {
             Stage(Path.Combine(directory, Path.GetFileName(index)), overwrite, pending,

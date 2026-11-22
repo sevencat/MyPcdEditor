@@ -1,0 +1,17 @@
+<Project>
+  <!--
+    Avalonia 核心包自带 OpenGL/Metal/Vulkan/MicroCom 四个后端程序集，而 Sevencat.Avalonia.Win64Aio
+    已把它们并进 Avalonia.Win64Aio.dll。该包的 buildTransitive 只剔除了运行时拷贝项，编译期引用仍在，
+    两份同名类型交给 Roslyn 会 CS0433（GlInterface / OpenGlControlBase），运行期又只剩合并版，
+    所以编译期也只认合并版：全仓库统一把这四个引用摘掉（没引用到的工程此目标为空操作）。
+  -->
+  <Target Name="DropMergedAvaloniaBackends" AfterTargets="ResolveLockFileReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)"
+                 Condition="'%(Filename)' == 'Avalonia.OpenGL'
+                            or '%(Filename)' == 'Avalonia.Metal'
+                            or '%(Filename)' == 'Avalonia.Vulkan'
+                            or '%(Filename)' == 'Avalonia.MicroCom'" />
+    </ItemGroup>
+  </Target>
+</Project>

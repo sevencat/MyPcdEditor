@@ -83,7 +83,10 @@ internal static class Program
     /// <summary>设计器与单元测试共用的配置入口。</summary>
     public static AppBuilder BuildAvaloniaApp()
         => AppBuilder.Configure<App>()
-            .UsePlatformDetect()
+            .UseWin32()
+            .UseSkia()
+            .UseHarfBuzz()
+            .WithInterFont()
             // 走 ANGLE（EGL → D3D11）：GLES 3.x 是 M0 的前提，起不来时 Avalonia 会回落
             .With(new Win32PlatformOptions
             {
